@@ -223,6 +223,33 @@ runner/broker双方の注文hard stopは変更しません。同じ履歴を見�
 controlとpaired比較し、さらに独立した再現確認が終わるまで`RESEARCH_ONLY`です。質問のサニタイズ要約と
 誤読の扱いは[Q013見直し記録](research/MOOMOO_AI_Q013_REVIEW_JA.md)に保存します。
 
+### 5.4 moomooAI Q014討論後の次工程
+
+2026-08-14のQ014では、Q013を擁護させず、反証、回答への赤チーム攻撃、最終裁定の3ラウンドで
+次工程を比較しました。途中回答に含まれたpaper注文、不適切な小標本検定、自動universeへの置換、
+根拠のないfee/slippage、ランダムUUIDは棄却しました。最終裁定は`RECORDER_FIRST`です。
+
+新しい売買条件やproduction変更は加えません。次の実装候補は、同じ
+`target_session + selected_symbol + selection_record_sha256`のcanonical JSONをdomain-separated
+SHA-256化したpair keyを共有するbaseline/Q013の
+prospective paired-shadow recorderです。selectionが固定された全sessionについて、baseline-only、
+candidate WAIT、no-fill、missing、data-quality、0取引を落とさず、各対象sessionにexactly oneの
+`SESSION_COMPLETE`または`SESSION_MISSING`を要求し、armごとの仮想stateを独立して記録します。
+注文・口座・position・trade APIは0件で、top-of-book同時性や実約定を証明できない間は`PROXY_ONLY`です。
+
+recorderはrepo外owner-onlyのimmutable manifest、content-addressed event ID、append-only hash chain、
+checkpointを前提にします。local chainは`LOCAL_CHAIN_ONLY`であり、外部時刻証明とは呼びません。
+判断時点のRAW/QFQ入力とadjustment mappingを固定し、後日のQFQ再取得で過去indicatorを書き換えません。
+Stage 1は候補版の最初の150完結往復でfutility判定だけを一度行い、通過しても成功とは呼びません。
+150件目を含むsession close後に全arm/eventをsealして一度停止し、通過時だけ最初のStage 2対象session前に
+O_EXCL activation markerを作ります。その後の時系列的に後続・非重複の50件をStage 2としてsealし、
+事前登録した最終条件を一度だけ適用します。時系列的非重複は統計的独立を保証しません。manifestには
+analysis population、primary estimand、futility/promotionのexact式・境界・欠損時動作も固定します。
+
+現releaseではこのrecorderは未実装・未接続です。Q013は`RESEARCH_ONLY`、production条件と注文hard stopは
+不変です。討論、棄却事項、manifest/event案は
+[Q014討論記録](research/MOOMOO_AI_Q014_DEBATE_JA.md)に保存します。
+
 ## 6. 目標状態機械と停止
 
 controlとexposureを分けます。
@@ -331,7 +358,8 @@ point-in-time調整系列であることを証明できません。日付・足�
 
 1. pure functions/state machineの合成テスト
 2. 発注前の技術blocker（§0）を全解消し、独立安全監査に合格
-3. sealed prospective shadow OOS 200完結往復（先頭150 + final 50を一度だけ評価）
+3. sealed prospective shadow OOS 200完結往復（先頭150 + 後続・非重複50を一度だけ評価。最低限の
+   governance gateであり、統計的十分性、独立性、利益を保証しない）
 4. safety integration shadow 20取引日以上、注文0、安全事故0
 5. 人が監視する1銘柄・1株・1往復SIMULATE（現在は実行不可）
 6. 60取引日かつ30往復のsupervised SIMULATE（現在は実行不可）

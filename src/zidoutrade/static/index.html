@@ -189,6 +189,11 @@
           <p>確定した15分足の「ATR ÷ 終値」が0.50%以下かを確認します。0.50%を超える場合や、計算に必要なデータが足りない場合は待機します。</p>
           <div class="warning-callout" role="note"><strong>本番未採用・注文は0件です</strong><p>将来のSHADOW比較に使う固定候補です。現在は記録機能を未接続としており、現行の売買判断も変えません。</p></div>
         </article>
+        <article class="panel q014-panel" aria-labelledby="q014-title">
+          <div class="panel-title"><div><p class="eyebrow">Q014討論の結論</p><h3 id="q014-title">条件を増やす前に、将来の比較記録を作る</h3></div><span class="pill pill-wait">設計中</span></div>
+          <p>基準版とQ013を、同じユーザー選択・同じ確定データで注文せずに比較できる記録を優先します。待機、仮想執行モデル上の未約定想定、欠損も消さずに残す計画です。</p>
+          <div class="warning-callout" role="note"><strong>まだ比較開始前です</strong><p>記録機能は未実装・未接続です。新しい売買条件の採用、SIMULATE注文、REAL注文は行いません。</p></div>
+        </article>
         <details class="panel glossary"><summary>RSI・ATRなどの用語をやさしく確認</summary><dl><div><dt>RSI</dt><dd>買われ過ぎ・売られ過ぎの目安。0〜100で表します。</dd></div><div><dt>ATR</dt><dd>値動きの大きさの目安。損失を抑える基準に使います。</dd></div><div><dt>SHADOW</dt><dd>判断だけを記録し、注文は出さない練習モードです。</dd></div><div><dt>Wilder RSI(14)</dt><dd>直近14期間を使う、RSIの標準的な計算方法です。</dd></div><div><dt>RTH</dt><dd>米国市場の通常取引時間です。時間外の値動きは使いません。</dd></div></dl></details>
       </section>
 

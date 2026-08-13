@@ -201,6 +201,11 @@ class DashboardTests(unittest.TestCase):
             "本番未採用",
             "本番未採用・注文は0件です",
             "記録機能を未接続",
+            "Q014討論の結論",
+            "条件を増やす前に、将来の比較記録を作る",
+            "仮想執行モデル上の未約定想定",
+            "まだ比較開始前です",
+            "記録機能は未実装・未接続です",
         ):
             self.assertIn(wording, html)
         self.assertIn("Content-Security-Policy", headers)
