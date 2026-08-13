@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zidoutrade"
+version = "0.1.0"
+description = "User-selected, RSI-first, SIMULATE-only trading research system"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "piyohiko12" }]
+dependencies = []
+
+[project.scripts]
+zidoutrade = "zidoutrade.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+zidoutrade = ["static/*.html", "static/*.css", "static/*.js"]

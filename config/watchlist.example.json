@@ -1,0 +1,9 @@
+{
+  "schema_version": "RSI_WATCHLIST_V1",
+  "symbols": [
+    {
+      "priority": 1,
+      "symbol": "US.EXAMPLE"
+    }
+  ]
+}

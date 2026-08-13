@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>ZidouTrade — RSI Autopilot</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar" aria-label="ツール">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">ZT</span>
+        <div>
+          <strong>ZidouTrade</strong>
+          <small>RSI ANALYSIS · SHADOW</small>
+        </div>
+      </div>
+
+      <nav class="tool-nav">
+        <p class="nav-label">WORKSPACE</p>
+        <a href="#overview" data-section="overview" class="nav-link is-active">
+          <span class="nav-icon" aria-hidden="true">⌂</span><span>概要</span>
+        </a>
+        <a href="#candidates" data-section="candidates" class="nav-link">
+          <span class="nav-icon" aria-hidden="true">◇</span><span>候補銘柄</span>
+        </a>
+        <a href="#decision" data-section="decision" class="nav-link">
+          <span class="nav-icon" aria-hidden="true">◎</span><span>売買判断</span>
+        </a>
+        <a href="#risk" data-section="risk" class="nav-link">
+          <span class="nav-icon" aria-hidden="true">△</span><span>リスク</span>
+        </a>
+        <a href="#journal" data-section="journal" class="nav-link">
+          <span class="nav-icon" aria-hidden="true">≡</span><span>株式日記</span>
+        </a>
+        <a href="#system" data-section="system" class="nav-link">
+          <span class="nav-icon" aria-hidden="true">⚙</span><span>システム</span>
+        </a>
+      </nav>
+
+      <div class="safety-card">
+        <div class="status-line"><span class="pulse"></span><strong>ORDER DISABLED</strong></div>
+        <p>この公開版は分析・候補選択専用です。SIMULATE注文も常に拒否します。</p>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">CONTROL CENTER</p>
+          <h1 id="page-title">運用概要</h1>
+        </div>
+        <div class="top-actions">
+          <span id="connection-pill" class="pill pill-wait">接続確認中</span>
+          <button id="refresh-button" class="button button-secondary" type="button">更新</button>
+        </div>
+      </header>
+
+      <div class="release-boundary" role="note">
+        <strong>SHADOW / 注文機能は無効</strong>
+        <span>候補選択・RSI判断・リスク計算の検証版です。ENTER/EXIT表示は分析結果であり、発注は0件です。</span>
+      </div>
+
+      <div id="global-message" class="message" role="status" aria-live="polite" hidden></div>
+
+      <section id="overview" class="workspace-section is-active" aria-labelledby="overview-title">
+        <div class="section-heading">
+          <div><p class="eyebrow">OVERVIEW</p><h2 id="overview-title">今日の準備状況</h2></div>
+          <span class="quiet">利益は保証されません</span>
+        </div>
+        <div class="metric-grid">
+          <article class="metric-card accent-card">
+            <span class="metric-label">対象セッション</span>
+            <strong id="metric-session">—</strong>
+            <small>ユーザー選択後に固定</small>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">適格候補</span>
+            <strong id="metric-eligible">—</strong>
+            <small>予測順位ではありません</small>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">選択状態</span>
+            <strong id="metric-state">未選択</strong>
+            <small id="metric-state-note">選ばなければ取引しません</small>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">実行モード</span>
+            <strong class="safe-text">SHADOW</strong>
+            <small>SIMULATEを含め発注不能</small>
+          </article>
+        </div>
+
+        <div class="two-column">
+          <article class="panel">
+            <div class="panel-title"><div><p class="eyebrow">FLOW</p><h3>次セッションまでの4段階</h3></div></div>
+            <ol class="flow-list">
+              <li data-flow="DRAFT"><span>1</span><div><strong>DRAFT</strong><p>候補を確認し、1銘柄または「取引しない」を選択</p></div></li>
+              <li data-flow="VALIDATED"><span>2</span><div><strong>VALIDATED</strong><p>表示済み・適格候補であることを検証</p></div></li>
+              <li data-flow="ARMED_NEXT_SESSION"><span>3</span><div><strong>SELECTION ARMED</strong><p>次セッションの分析対象だけを固定。注文は有効になりません</p></div></li>
+              <li data-flow="SESSION_LOCKED"><span>4</span><div><strong>LOCKED</strong><p>セッション中の銘柄差し替えを禁止</p></div></li>
+            </ol>
+          </article>
+          <article class="panel explain-panel">
+            <div class="panel-title"><div><p class="eyebrow">WHY</p><h3>ユーザーが最後に選ぶ理由</h3></div></div>
+            <p>システムは流動性・データ品質・上昇トレンドを満たす候補だけを表示します。ただし「上がりそうな順」の点数は付けません。</p>
+            <div class="callout"><strong>重要</strong><span>候補選択は分析対象の固定だけです。このリリースでは注文を有効化できません。</span></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="candidates" class="workspace-section" aria-labelledby="candidates-title" hidden>
+        <div class="section-heading">
+          <div><p class="eyebrow">CANDIDATES</p><h2 id="candidates-title">候補銘柄を選ぶ</h2></div>
+          <span class="quiet">最大20銘柄 · ユーザー優先度→ティッカー順</span>
+        </div>
+        <div class="panel selection-panel">
+          <div class="selection-toolbar">
+            <div>
+              <label for="target-session">対象セッション</label>
+              <input id="target-session" type="date" autocomplete="off">
+            </div>
+            <div class="selection-actions">
+              <button id="save-selection" type="button" class="button button-secondary">1. DRAFT保存</button>
+              <button id="validate-selection" type="button" class="button button-secondary">2. 内容を検証</button>
+              <button id="arm-selection" type="button" class="button button-primary">3. 分析対象をARM</button>
+            </div>
+          </div>
+          <p class="field-help">適格候補を1つ選び、DRAFT保存→検証→分析対象ARMを順に実行します。「取引しない」も正式選択です。ARMは注文機能を有効化せず、この公開版の発注数は常に0です。</p>
+          <div class="candidate-table-wrap">
+            <table class="candidate-table">
+              <thead><tr><th scope="col">選択</th><th scope="col">銘柄</th><th scope="col">適格性</th><th scope="col">ユーザー優先度</th><th scope="col">判定理由</th></tr></thead>
+              <tbody id="candidate-rows"><tr><td colspan="5" class="empty">データを読み込んでいます…</td></tr></tbody>
+            </table>
+          </div>
+          <label class="no-trade-choice"><input type="radio" name="candidate" value=""><span><strong>このセッションは取引しない</strong><small>未選択時のフェイルセーフ</small></span></label>
+        </div>
+      </section>
+
+      <section id="decision" class="workspace-section" aria-labelledby="decision-title" hidden>
+        <div class="section-heading">
+          <div><p class="eyebrow">DECISION LOGIC</p><h2 id="decision-title">RSI売買判断</h2></div>
+          <span class="pill pill-info">Wilder RSI(14)</span>
+        </div>
+        <div class="logic-grid">
+          <article class="panel logic-panel">
+            <div class="logic-number">01</div><p class="eyebrow">DATA</p><h3>完成済み15分足だけ</h3>
+            <p>米国通常取引時間（RTH）の確定したバーだけを使います。形成中のバーによる先読みを避けます。</p>
+          </article>
+          <article class="panel logic-panel buy-logic">
+            <div class="logic-number">02</div><p class="eyebrow">ENTRY</p><h3>売られ過ぎからの回復</h3>
+            <ul id="entry-rules"><li>直近3本以内に RSI ≤ 30</li><li>前回 RSI ≤ 35、現在 RSI &gt; 35</li><li>終値が前バー高値を上回る</li><li>10:00–15:15 ETのみ</li></ul>
+          </article>
+          <article class="panel logic-panel exit-logic">
+            <div class="logic-number">03</div><p class="eyebrow">EXIT</p><h3>利益より先に損失を限定</h3>
+            <ul id="exit-rules"><li>エントリーから1.5 ATRの防御ストップ</li><li>RSI ≥ 60で終了</li><li>8本（2時間）で時間切れ</li><li>大引け15分前までに終了</li></ul>
+          </article>
+        </div>
+        <article class="panel decision-status">
+          <div class="panel-title"><div><p class="eyebrow">CURRENT</p><h3>現在の判断</h3></div><span id="decision-badge" class="pill pill-wait">WAIT</span></div>
+          <pre id="decision-detail" class="data-block">判断データ待ち</pre>
+        </article>
+      </section>
+
+      <section id="risk" class="workspace-section" aria-labelledby="risk-title" hidden>
+        <div class="section-heading"><div><p class="eyebrow">RISK</p><h2 id="risk-title">リスク制御</h2></div><span class="quiet">取引しない判断を常に許可</span></div>
+        <div id="risk-cards" class="metric-grid"></div>
+        <article class="panel">
+          <div class="panel-title"><div><p class="eyebrow">FAIL CLOSED</p><h3>停止が優先される条件</h3></div></div>
+          <div class="stop-grid"><span>データ不足</span><span>銘柄未選択</span><span>セッション不一致</span><span>状態ハッシュ不一致</span><span>日次損失上限</span><span>接続異常</span></div>
+        </article>
+      </section>
+
+      <section id="journal" class="workspace-section" aria-labelledby="journal-title" hidden>
+        <div class="section-heading"><div><p class="eyebrow">JOURNAL</p><h2 id="journal-title">株式日記</h2></div><span class="quiet">判断根拠を後から検証</span></div>
+        <div id="journal-list" class="journal-list"><div class="panel empty">記録はまだありません。</div></div>
+      </section>
+
+      <section id="system" class="workspace-section" aria-labelledby="system-title" hidden>
+        <div class="section-heading"><div><p class="eyebrow">SYSTEM</p><h2 id="system-title">システム状態</h2></div><span class="pill pill-safe">LOCAL ONLY</span></div>
+        <article class="panel">
+          <dl id="system-list" class="system-list"><div><dt>UI</dt><dd>127.0.0.1 loopback</dd></div><div><dt>注文経路</dt><dd>このUIにはありません</dd></div></dl>
+        </article>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
