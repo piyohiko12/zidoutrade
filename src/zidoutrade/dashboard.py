@@ -97,22 +97,17 @@ _HASH_VALUE_PATHS = {
 _SELECTION_STATES = frozenset(item.value for item in SelectionState)
 _INSTRUMENT_KINDS = frozenset(item.value for item in InstrumentKind)
 _JOURNAL_FIELDS = {
-    "action",
     "decision",
-    "detail",
-    "event",
     "kind",
     "mood",
-    "note",
-    "reason",
     "reason_codes",
     "schema_version",
     "session_date",
     "symbol",
     "tags",
-    "time",
-    "timestamp",
 }
+_JOURNAL_KINDS = {"SIGNAL", "TRADE_LIFECYCLE", "MANUAL_NOTE", "SAFETY"}
+_JOURNAL_MOODS = {"CALM", "CONFIDENT", "UNCERTAIN", "STRESSED", "REFLECTIVE"}
 
 _SECTION_FIELDS = {
     "overview": {
@@ -319,8 +314,41 @@ def _assert_public_state_shape(value: Mapping[str, Any]) -> None:
         _assert_candidate_schema(candidate)
     _assert_selection_schema(value["selection"])
     for event in value["journal"]:
-        if type(event) is not dict or not set(event).issubset(_JOURNAL_FIELDS):
+        if type(event) is not dict or set(event) != _JOURNAL_FIELDS:
             raise ValueError("INVALID_PUBLIC_JOURNAL")
+        if event["schema_version"] != "RSI_STOCK_JOURNAL_V1":
+            raise ValueError("INVALID_PUBLIC_JOURNAL")
+        if event["kind"] not in _JOURNAL_KINDS:
+            raise ValueError("INVALID_PUBLIC_JOURNAL")
+        if event["mood"] is not None and event["mood"] not in _JOURNAL_MOODS:
+            raise ValueError("INVALID_PUBLIC_JOURNAL")
+        if type(event["decision"]) is not str or not _PUBLIC_CODE.fullmatch(
+            event["decision"]
+        ):
+            raise ValueError("INVALID_PUBLIC_JOURNAL")
+        if type(event["reason_codes"]) is not list or any(
+            type(reason) is not str or not _PUBLIC_CODE.fullmatch(reason)
+            for reason in event["reason_codes"]
+        ):
+            raise ValueError("INVALID_PUBLIC_JOURNAL")
+        if type(event["tags"]) is not list or any(
+            type(tag) is not str or not _PUBLIC_CODE.fullmatch(tag)
+            for tag in event["tags"]
+        ):
+            raise ValueError("INVALID_PUBLIC_JOURNAL")
+
+
+def _public_journal_mapping(value: Mapping[str, Any]) -> Dict[str, Any]:
+    """Project a private diary entry to its non-free-text public DTO."""
+
+    if not isinstance(value, Mapping):
+        raise ValueError("INVALID_PUBLIC_JOURNAL")
+    projected = {field: value.get(field) for field in _JOURNAL_FIELDS}
+    # Validate through the same complete state-shape path's event contract by
+    # rejecting absent fields here; the caller performs value validation.
+    if any(field not in value for field in _JOURNAL_FIELDS):
+        raise ValueError("INVALID_PUBLIC_JOURNAL")
+    return projected
 
 
 def _assert_public_redacted(
@@ -411,7 +439,7 @@ class DashboardSnapshot:
             "selection": None if self.selection is None else self.selection.envelope(),
             "decision": _plain_mapping(self.decision),
             "risk": _plain_mapping(self.risk),
-            "journal": [dict(item) for item in self.journal],
+            "journal": [_public_journal_mapping(item) for item in self.journal],
             "system": _plain_mapping(self.system),
             "strategy_explanation": dict(_STRATEGY_EXPLANATION),
         }
@@ -759,15 +787,26 @@ def _handler_class(application: DashboardApplication) -> type:
             ):
                 self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "INVALID_CALLBACK_RESPONSE")
                 return
-            if "message" in result and result["message"] != "Selection revision saved.":
-                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "INVALID_CALLBACK_RESPONSE")
-                return
+            public_result = {
+                field: result[field]
+                for field in (
+                    "saved",
+                    "selected_symbol",
+                    "state",
+                    "target_session",
+                )
+                if field in result
+            }
+            # Callback message text and record hashes are private integration
+            # details.  The server emits its own fixed message and never
+            # publishes either value.
+            public_result["message"] = "Selection revision saved."
             try:
-                _assert_public_redacted(result)
+                _assert_public_redacted(public_result)
             except ValueError:
                 self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "INVALID_CALLBACK_RESPONSE")
                 return
-            self._json(HTTPStatus.OK, result)
+            self._json(HTTPStatus.OK, public_result)
 
         def do_OPTIONS(self) -> None:  # noqa: N802
             if not self._host_allowed():

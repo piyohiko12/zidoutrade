@@ -172,12 +172,12 @@ function renderJournal(state) {
     const article = document.createElement("article");
     article.className = "panel journal-item";
     const time = document.createElement("time");
-    time.textContent = event.timestamp || event.time || "—";
+    time.textContent = event.session_date || "—";
     const detail = document.createElement("div");
     const strong = document.createElement("strong");
-    strong.textContent = event.event || event.action || "記録";
+    strong.textContent = event.decision || event.kind || "記録";
     const paragraph = document.createElement("p");
-    paragraph.textContent = event.reason || event.detail || "";
+    paragraph.textContent = Array.isArray(event.reason_codes) ? event.reason_codes.join(" · ") : "";
     detail.append(strong, paragraph);
     const symbol = document.createElement("span");
     symbol.className = "pill pill-info";

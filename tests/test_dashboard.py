@@ -326,6 +326,30 @@ class DashboardTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     application.state()
 
+    def test_private_journal_free_text_is_never_a_public_field(self):
+        private_entry = {
+            "decision": "WAIT",
+            "kind": "MANUAL_NOTE",
+            "mood": "CALM",
+            "note": "paper-order-abc",
+            "reason_codes": ["NO_SIGNAL"],
+            "schema_version": "RSI_STOCK_JOURNAL_V1",
+            "session_date": "2026-08-14",
+            "symbol": "US.AAPL",
+            "tags": ["REVIEW"],
+        }
+        direct = copy.deepcopy(self.state)
+        direct["journal"] = [private_entry]
+        with self.assertRaises(ValueError):
+            DashboardApplication(lambda: direct, csrf_token="d" * 48).state()
+
+        snapshot = dashboard.DashboardSnapshot(
+            candidates=dashboard.CandidateBatch(evaluations=()),
+            journal=(private_entry,),
+        ).to_dict()
+        self.assertNotIn("note", snapshot["journal"][0])
+        DashboardApplication(lambda: snapshot, csrf_token="d" * 48).state()
+
     def test_public_state_rejects_untyped_or_oversized_unstructured_values(self):
         attacks = (
             {"overview": "not-an-object"},
@@ -386,8 +410,38 @@ class DashboardTests(unittest.TestCase):
             finally:
                 self.handler_class = previous_handler
             with self.subTest(message=unsafe_message):
-                self.assertEqual(status, 500, body)
-                self.assertEqual(json.loads(body)["error"], "INVALID_CALLBACK_RESPONSE")
+                self.assertEqual(status, 200, body)
+                self.assertEqual(
+                    json.loads(body),
+                    {
+                        "message": "Selection revision saved.",
+                        "saved": True,
+                        "selected_symbol": "US.AAPL",
+                        "target_session": "2026-08-14",
+                    },
+                )
+
+    def test_callback_record_hash_is_never_published(self):
+        application = DashboardApplication(
+            lambda: self.state,
+            selection_callback=lambda symbol, target: {
+                "saved": True,
+                "selected_symbol": symbol,
+                "target_session": target,
+                "record_sha256": "a" * 64,
+            },
+            csrf_token=self.token,
+        )
+        previous_handler = self.handler_class
+        self.handler_class = dashboard._handler_class(application)
+        try:
+            status, _, body = self.post_selection(
+                {"selected_symbol": "US.AAPL", "target_session": "2026-08-14"}
+            )
+        finally:
+            self.handler_class = previous_handler
+        self.assertEqual(status, 200, body)
+        self.assertNotIn("record_sha256", json.loads(body))
 
     def test_public_sections_reject_unapproved_identifier_fields(self):
         for attack in (
