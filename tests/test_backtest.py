@@ -2,6 +2,7 @@ from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 import json
 import unittest
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from zidoutrade.backtest import (
@@ -10,13 +11,18 @@ from zidoutrade.backtest import (
     DatedTrend,
     MODEL_ID,
     Q013_ATR_CLOSE_CAP,
+    Q015_VARIANT_ID,
     RESULT_STATUS,
     SessionBoundary,
+    _prior_completed_rth_close,
+    _q015_allows_entry,
+    _q015_reward_covers_loss,
     _variant_allows_entry,
     run_candle_backtest,
 )
+from zidoutrade.indicators import wilder_atr
 from zidoutrade.models import CompletedBar15m, ReasonCode, TrendEligibility
-from zidoutrade.risk import RiskPolicy
+from zidoutrade.risk import RiskPolicy, RiskState
 
 
 NY = ZoneInfo("America/New_York")
@@ -85,6 +91,281 @@ def config(**changes):
 
 
 class CandleBacktestTests(unittest.TestCase):
+    def test_q015_variant_id_is_fixed_and_rejects_string_coercion(self):
+        self.assertEqual(
+            BacktestVariant.Q015_PRIOR_CLOSE_NET_REWARD_RISK_GATE_V1.value,
+            Q015_VARIANT_ID,
+        )
+        with self.assertRaisesRegex(TypeError, "exact BacktestVariant"):
+            config(strategy_variant=Q015_VARIANT_ID)
+
+    def test_q015_requires_prior_official_final_rth_bar(self):
+        bars = synthetic_bars()
+        index = next(i for i, bar in enumerate(bars) if bar.session_date == DAY2)
+        complete = {item.session_date: item for item in sessions()}
+        shortened = dict(complete)
+        shortened[DAY1] = SessionBoundary(
+            DAY1, datetime.combine(DAY1, time(13, 0), tzinfo=NY)
+        )
+
+        self.assertEqual(
+            _prior_completed_rth_close(index, bars, complete),
+            bars[index - 1].close,
+        )
+        self.assertIsNone(_prior_completed_rth_close(index, bars, shortened))
+        self.assertIsNone(_prior_completed_rth_close(index, bars, {DAY2: complete[DAY2]}))
+        missing_intervening = dict(complete)
+        intervening_day = DAY2
+        missing_intervening[intervening_day] = SessionBoundary(
+            intervening_day,
+            datetime.combine(intervening_day, time(16, 0), tzinfo=NY),
+        )
+        later_target = tuple(
+            replace(
+                bar,
+                start=bar.start + timedelta(days=1),
+                end=bar.end + timedelta(days=1),
+            )
+            if bar.session_date == DAY2
+            else bar
+            for bar in bars
+        )
+        target_day = DAY2 + timedelta(days=1)
+        missing_intervening[target_day] = SessionBoundary(
+            target_day,
+            datetime.combine(target_day, time(16, 0), tzinfo=NY),
+        )
+        later_index = next(
+            i for i, bar in enumerate(later_target) if bar.session_date == target_day
+        )
+        self.assertIsNone(
+            _prior_completed_rth_close(later_index, later_target, missing_intervening)
+        )
+
+    def test_q015_fixed_formula_passes_and_returns_eventual_sizing(self):
+        bars = list(synthetic_bars())
+        prior_index = max(i for i, bar in enumerate(bars) if bar.session_date == DAY1)
+        prior = bars[prior_index]
+        bars[prior_index] = replace(
+            prior,
+            close=107.0,
+            high=max(prior.open, 107.0) + 0.1,
+            low=min(prior.open, 107.0) - 0.1,
+        )
+        bars = tuple(bars)
+        baseline = run_candle_backtest(bars, bars, trends(), sessions(), config())
+        self.assertEqual(baseline.entry_signal_count, 1)
+        signal_index = next(
+            i for i, bar in enumerate(bars) if bar.end == baseline.trades[0].signal_bar_end
+        )
+        state = RiskState(100_000.0, 100_000.0, 0.0, 0.0, 0)
+
+        sizing = _q015_allows_entry(
+            signal_index,
+            bars,
+            bars,
+            wilder_atr(bars, 14),
+            next_index=signal_index + 1,
+            state=state,
+            config=config(
+                strategy_variant=BacktestVariant.Q015_PRIOR_CLOSE_NET_REWARD_RISK_GATE_V1
+            ),
+            boundaries={item.session_date: item for item in sessions()},
+        )
+        q015 = run_candle_backtest(
+            bars,
+            bars,
+            trends(),
+            sessions(),
+            config(
+                strategy_variant=BacktestVariant.Q015_PRIOR_CLOSE_NET_REWARD_RISK_GATE_V1
+            ),
+        )
+
+        self.assertIsNotNone(sizing)
+        assert sizing is not None
+        self.assertTrue(sizing.allowed)
+        self.assertEqual(q015.trade_count, 1)
+        self.assertEqual(q015.trades[0].quantity, sizing.qty)
+        self.assertIn("reward proxy", " ".join(q015.assumptions))
+        self.assertIn("not an exit target", " ".join(q015.limitations))
+        self.assertIn("IN_SAMPLE_POST_HOC", " ".join(q015.limitations))
+
+    def test_q015_uses_only_next_raw_open_and_completed_inputs(self):
+        bars = list(synthetic_bars())
+        prior_index = max(i for i, bar in enumerate(bars) if bar.session_date == DAY1)
+        prior = bars[prior_index]
+        bars[prior_index] = replace(
+            prior,
+            close=107.0,
+            high=max(prior.open, 107.0) + 0.1,
+            low=min(prior.open, 107.0) - 0.1,
+        )
+        bars = tuple(bars)
+        baseline = run_candle_backtest(bars, bars, trends(), sessions(), config())
+        index = next(
+            i for i, bar in enumerate(bars) if bar.end == baseline.trades[0].signal_bar_end
+        )
+        altered = list(bars)
+        next_bar = altered[index + 1]
+        altered[index + 1] = replace(
+            next_bar,
+            high=next_bar.high + 500.0,
+            low=max(0.01, next_bar.low / 2.0),
+            close=next_bar.close + 100.0,
+            volume=next_bar.volume + 12345.0,
+        )
+        for later in range(index + 2, len(altered)):
+            bar = altered[later]
+            altered[later] = replace(bar, volume=bar.volume + later)
+        state = RiskState(100_000.0, 100_000.0, 0.0, 0.0, 0)
+        cfg = config(
+            strategy_variant=BacktestVariant.Q015_PRIOR_CLOSE_NET_REWARD_RISK_GATE_V1
+        )
+        boundaries = {item.session_date: item for item in sessions()}
+
+        first = _q015_allows_entry(
+            index,
+            bars,
+            bars,
+            wilder_atr(bars, 14),
+            next_index=index + 1,
+            state=state,
+            config=cfg,
+            boundaries=boundaries,
+        )
+        second = _q015_allows_entry(
+            index,
+            bars,
+            tuple(altered),
+            wilder_atr(bars, 14),
+            next_index=index + 1,
+            state=state,
+            config=cfg,
+            boundaries=boundaries,
+        )
+
+        self.assertIsNotNone(first)
+        self.assertEqual(first, second)
+
+    def test_q015_wait_is_not_counted_as_risk_block(self):
+        bars = synthetic_bars()
+        result = run_candle_backtest(
+            bars,
+            bars,
+            trends(),
+            sessions(),
+            config(
+                strategy_variant=BacktestVariant.Q015_PRIOR_CLOSE_NET_REWARD_RISK_GATE_V1
+            ),
+        )
+        self.assertEqual(result.trade_count, 0)
+        self.assertEqual(result.entry_signal_count, 0)
+        self.assertEqual(result.risk_blocked_signal_count, 0)
+
+    def test_q015_helper_rejects_a_non_q015_config(self):
+        bars = synthetic_bars()
+        index = next(i for i, bar in enumerate(bars) if bar.session_date == DAY2)
+        self.assertIsNone(
+            _q015_allows_entry(
+                index,
+                bars,
+                bars,
+                wilder_atr(bars, 14),
+                next_index=index + 1,
+                state=RiskState(100_000.0, 100_000.0, 0.0, 0.0, 0),
+                config=config(),
+                boundaries={item.session_date: item for item in sessions()},
+            )
+        )
+
+    def test_q015_is_a_baseline_subset_and_never_stacks_with_q013(self):
+        bars = synthetic_bars()
+        baseline = run_candle_backtest(bars, bars, trends(), sessions(), config())
+        q013 = run_candle_backtest(
+            bars,
+            bars,
+            trends(),
+            sessions(),
+            config(strategy_variant=BacktestVariant.Q013_ATR_CAP_0050_SHADOW),
+        )
+        q015 = run_candle_backtest(
+            bars,
+            bars,
+            trends(),
+            sessions(),
+            config(
+                strategy_variant=BacktestVariant.Q015_PRIOR_CLOSE_NET_REWARD_RISK_GATE_V1
+            ),
+        )
+
+        baseline_ids = {trade.opportunity_id for trade in baseline.trades}
+        self.assertLessEqual(
+            {trade.opportunity_id for trade in q015.trades}, baseline_ids
+        )
+        self.assertNotEqual(q015.strategy_variant_id, q013.strategy_variant_id)
+        self.assertNotIn("Q013", q015.strategy_variant_id)
+
+    def test_q015_q_below_one_waits_before_fee_calculation(self):
+        bars = list(synthetic_bars())
+        prior_index = max(i for i, bar in enumerate(bars) if bar.session_date == DAY1)
+        prior = bars[prior_index]
+        bars[prior_index] = replace(
+            prior,
+            close=107.0,
+            high=max(prior.open, 107.0) + 0.1,
+            low=min(prior.open, 107.0) - 0.1,
+        )
+        bars = tuple(bars)
+        baseline = run_candle_backtest(bars, bars, trends(), sessions(), config())
+        index = next(
+            i for i, bar in enumerate(bars) if bar.end == baseline.trades[0].signal_bar_end
+        )
+        tiny_cap = RiskPolicy(maximum_investment_cents=1)
+
+        with patch("zidoutrade.backtest.calculate_order_fees") as fees:
+            result = _q015_allows_entry(
+                index,
+                bars,
+                bars,
+                wilder_atr(bars, 14),
+                next_index=index + 1,
+                state=RiskState(100_000.0, 100_000.0, 0.0, 0.0, 0),
+                config=config(
+                    risk_policy=tiny_cap,
+                    strategy_variant=(
+                        BacktestVariant.Q015_PRIOR_CLOSE_NET_REWARD_RISK_GATE_V1
+                    ),
+                ),
+                boundaries={item.session_date: item for item in sessions()},
+            )
+
+        self.assertIsNone(result)
+        fees.assert_not_called()
+
+    def test_q015_inclusive_reward_loss_boundary_passes(self):
+        # q*(105-100)-1-1 == q*(100-97)+1+1 == 8 exactly.
+        self.assertTrue(_q015_reward_covers_loss(2, 100.0, 105.0, 97.0, 1.0, 1.0, 1.0))
+        self.assertFalse(
+            _q015_reward_covers_loss(2, 100.0, 104.99, 97.0, 1.0, 1.0, 1.0)
+        )
+
+    def test_q015_helper_fails_closed_on_untyped_config(self):
+        bars = synthetic_bars()
+        index = next(i for i, bar in enumerate(bars) if bar.session_date == DAY2)
+        self.assertIsNone(
+            _q015_allows_entry(
+                index,
+                bars,
+                bars,
+                wilder_atr(bars, 14),
+                next_index=index + 1,
+                state=RiskState(100_000.0, 100_000.0, 0.0, 0.0, 0),
+                config=object(),
+                boundaries={item.session_date: item for item in sessions()},
+            )
+        )
+
     def test_default_variant_equals_explicit_baseline_and_is_reported(self):
         bars = synthetic_bars()
         implicit = run_candle_backtest(bars, bars, trends(), sessions(), config())

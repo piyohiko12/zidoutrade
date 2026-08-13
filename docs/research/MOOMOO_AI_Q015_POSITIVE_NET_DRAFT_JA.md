@@ -4,7 +4,7 @@
 
 種別: サニタイズ済み要約（逐語録ではない）
 
-状態: `DRAFT_ONLY / RESEARCH_NOTE / NOT_IMPLEMENTED / NOT_ADOPTED`
+状態: `DRAFT_ONLY / RESEARCH_BACKTEST_IMPLEMENTED / NOT_ADOPTED`
 
 この文書には口座、注文、残高、position、価格、銘柄、検証期間、個別取引、正確なperformance値、
 cookieその他の秘密を含めません。討論中もOpenD、口座、注文にはアクセスしていません。
@@ -295,5 +295,6 @@ local hash chainは`LOCAL_CHAIN_ONLY`であり、外部時刻や実世界の発�
 - long-only、RTH、確定足、1日1往復、先読み禁止
 - runner/broker双方の無条件注文hard stop
 
-この原案のproduction注文影響は0件です。Q015は実装しておらず、UIへ「改善済み」または「比較中」と
-表示しません。
+この原案のproduction注文影響は0件です。固定式は注文0の探索的backtest variantとしてのみ実装済みです。
+production判断、Q014 prospective recorder、CLIの自由なthreshold指定には接続しておらず、UIへ
+「改善済み」または「比較中」と表示しません。

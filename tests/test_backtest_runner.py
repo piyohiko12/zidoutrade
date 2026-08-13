@@ -135,6 +135,28 @@ class BacktestRunnerTests(unittest.TestCase):
             BacktestVariant.Q013_ATR_CAP_0050_SHADOW,
         )
 
+    def test_adapter_propagates_q015_as_a_typed_research_variant(self):
+        bundle = _bundle()
+        sentinel = object()
+        policy = RiskPolicy(maximum_investment_cents=1_000_000)
+        with patch(
+            "zidoutrade.backtest_runner.run_candle_backtest", return_value=sentinel
+        ) as engine:
+            result = run_attested_backtest(
+                bundle,
+                initial_equity=100_000.0,
+                risk_policy=policy,
+                strategy_variant=(
+                    BacktestVariant.Q015_PRIOR_CLOSE_NET_REWARD_RISK_GATE_V1
+                ),
+            )
+
+        self.assertIs(result, sentinel)
+        self.assertIs(
+            engine.call_args.kwargs["config"].strategy_variant,
+            BacktestVariant.Q015_PRIOR_CLOSE_NET_REWARD_RISK_GATE_V1,
+        )
+
     def test_adapter_rejects_untyped_variant(self):
         with self.assertRaisesRegex(TypeError, "exact BacktestVariant"):
             run_attested_backtest(

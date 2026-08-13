@@ -263,8 +263,9 @@ lossを比較し、前者が後者以上の場合だけ研究gateを`PASS`とす
 近傍探索をしません。Q013とは合成せず、RSI/Q012、exit、risk、fee、selectionを変更しません。
 
 ただし前RTH終値は実際のexit価格ではなく、到達を保証する因果的targetでもありません。そのため最終評価は
-`DRAFT_REWARD_RISK_NOTE_ONLY`であり、現releaseには未実装・未接続です。既閲覧履歴は1回のsanityと棄却に
-しか使わず、プラスでも採用証拠にしません。Q014 recorderの実装・独立監査、Q015用manifestの事前固定、
+`DRAFT_REWARD_RISK_NOTE_ONLY`です。現releaseでは固定式を注文0の探索的backtest variantとしてのみ実装し、
+production判断、Q014 recorder、CLIの自由なthreshold指定には接続しません。既閲覧履歴は1回のsanityと
+棄却にしか使わず、プラスでも採用証拠にしません。Q014 recorderの実装・独立監査、Q015用manifestの事前固定、
 Stage 1の150完結往復と後続Stage 2の50完結往復を終えるまでproduction条件へ加えません。正確な式、
 fee計算前の`q < 1 => WAIT`、Stageごとの同額資本reset、正規化200件合算、固定cost stress、precision gate、
 acquisition-date QFQのpoint-in-time限界を含むfail-closed条件、反証、評価条件は

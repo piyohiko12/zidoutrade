@@ -28,7 +28,15 @@ from .models import (
     require_number,
     require_symbol,
 )
-from .risk import PAPER_FEE_SCHEDULE, RiskPolicy, RiskState, SizingRequest, size_position
+from .risk import (
+    ExecutionStress,
+    PAPER_FEE_SCHEDULE,
+    RiskPolicy,
+    RiskState,
+    SizingRequest,
+    SizingResult,
+    size_position,
+)
 from .strategy import (
     CLOSE_EXIT_LEAD,
     ENTRY_END,
@@ -47,6 +55,7 @@ from .strategy import (
 MODEL_ID = "HISTORICAL_CANDLE_PROXY_V1"
 RESULT_STATUS = "EXPLORATORY_ONLY"
 Q013_ATR_CLOSE_CAP = 0.0050
+Q015_VARIANT_ID = "Q015_PRIOR_CLOSE_NET_REWARD_RISK_GATE_V1"
 
 
 class BacktestVariant(str, Enum):
@@ -54,6 +63,7 @@ class BacktestVariant(str, Enum):
 
     BASELINE = "RSI_AUTOPILOT_V1"
     Q013_ATR_CAP_0050_SHADOW = "RSI_AUTOPILOT_V1_Q013_ATR_CAP_0050_SHADOW"
+    Q015_PRIOR_CLOSE_NET_REWARD_RISK_GATE_V1 = Q015_VARIANT_ID
 
 
 @dataclass(frozen=True)
@@ -453,6 +463,11 @@ def _variant_allows_entry(
         raise TypeError("variant must be an exact BacktestVariant")
     if variant is BacktestVariant.BASELINE:
         return True
+    if variant is BacktestVariant.Q015_PRIOR_CLOSE_NET_REWARD_RISK_GATE_V1:
+        # Q015 is evaluated immediately before sizing because its fixed formula
+        # requires the next RAW open, prior-session close and the arm-specific
+        # entry-time RiskState.  It never composes with Q013.
+        return True
     if variant is not BacktestVariant.Q013_ATR_CAP_0050_SHADOW:
         raise ValueError("unsupported backtest strategy variant")
     if index < 0 or index >= len(bars) or index >= len(atr):
@@ -468,6 +483,210 @@ def _variant_allows_entry(
     ):
         return False
     return latest_atr / latest_close <= Q013_ATR_CLOSE_CAP
+
+
+def _prior_completed_rth_close(
+    index: int,
+    bars: Tuple[CompletedBar15m, ...],
+    boundaries: Dict[date, SessionBoundary],
+) -> Optional[float]:
+    """Return the final close of the prior official, complete RTH session."""
+
+    if (
+        type(index) is not int
+        or type(boundaries) is not dict
+        or index < 0
+        or index >= len(bars)
+    ):
+        return None
+    target_session = bars[index].session_date
+    cursor = index - 1
+    while cursor >= 0 and bars[cursor].session_date == target_session:
+        cursor -= 1
+    if cursor < 0:
+        return None
+    prior_session = bars[cursor].session_date
+    prior_close = bars[cursor].close
+    official_prior_sessions = tuple(day for day in boundaries if day < target_session)
+    if not official_prior_sessions or prior_session != max(official_prior_sessions):
+        return None
+    boundary = boundaries.get(prior_session)
+    if type(boundary) is not SessionBoundary:
+        return None
+    if (
+        prior_session >= target_session
+        or bars[cursor].end != boundary.close_at
+        or not math.isfinite(prior_close)
+        or prior_close <= 0.0
+    ):
+        return None
+    return prior_close
+
+
+def _q015_allows_entry(
+    index: int,
+    qfq_bars: Tuple[CompletedBar15m, ...],
+    raw_bars: Tuple[CompletedBar15m, ...],
+    atr: Tuple[Optional[float], ...],
+    *,
+    next_index: int,
+    state: RiskState,
+    config: BacktestConfig,
+    boundaries: Dict[date, SessionBoundary],
+) -> Optional[SizingResult]:
+    """Evaluate the fixed Q015 reward/risk research gate, fail closed.
+
+    Only the completed signal bar, the preceding RTH session's final close and
+    the next same-session RAW *open* are read.  No later field of the next bar
+    participates in the decision.  The function is pure and order-free.
+    """
+
+    if type(index) is not int or type(next_index) is not int:
+        return None
+    if type(state) is not RiskState or type(config) is not BacktestConfig:
+        return None
+    if config.strategy_variant is not BacktestVariant.Q015_PRIOR_CLOSE_NET_REWARD_RISK_GATE_V1:
+        return None
+    if (
+        index < 0
+        or index >= len(qfq_bars)
+        or index >= len(raw_bars)
+        or index >= len(atr)
+        or next_index != index + 1
+        or next_index >= len(raw_bars)
+    ):
+        return None
+    signal_qfq = qfq_bars[index]
+    signal_raw = raw_bars[index]
+    next_raw = raw_bars[next_index]
+    if (
+        signal_qfq.start != signal_raw.start
+        or signal_qfq.end != signal_raw.end
+        or next_raw.session_date != signal_qfq.session_date
+        or next_raw.start != signal_qfq.end
+    ):
+        return None
+    latest_atr = atr[index]
+    prior_qfq_close = _prior_completed_rth_close(index, qfq_bars, boundaries)
+    if latest_atr is None or prior_qfq_close is None:
+        return None
+    values = (
+        signal_qfq.close,
+        signal_raw.close,
+        next_raw.open,
+        latest_atr,
+        prior_qfq_close,
+    )
+    if any(not math.isfinite(value) or value <= 0.0 for value in values):
+        return None
+
+    scale = signal_raw.close / signal_qfq.close
+    atr_raw = float(latest_atr) * scale
+    entry_price = _adverse_buy(next_raw.open, config)
+    stop_price = entry_price - ATR_STOP_MULTIPLE * atr_raw
+    target_raw = prior_qfq_close * scale
+    normal_exit_price = _adverse_sell(target_raw, stressed=False, config=config)
+    stressed_exit_price = _adverse_sell(stop_price, stressed=True, config=config)
+    derived = (
+        scale,
+        atr_raw,
+        entry_price,
+        stop_price,
+        target_raw,
+        normal_exit_price,
+        stressed_exit_price,
+    )
+    if any(not math.isfinite(value) or value <= 0.0 for value in derived):
+        return None
+    if normal_exit_price <= entry_price:
+        return None
+
+    sizing = size_position(
+        SizingRequest(
+            state=state,
+            entry_limit=entry_price,
+            stop_trigger=stop_price,
+            entry_fees=PAPER_FEE_SCHEDULE,
+            exit_fees=PAPER_FEE_SCHEDULE,
+            stress=ExecutionStress(),
+            policy=config.risk_policy,
+        )
+    )
+    quantity = sizing.qty
+    if type(quantity) is not int or quantity < 1:
+        return None
+    buy_fee = float(
+        calculate_order_fees(
+            PAPER_FEE_SCHEDULE, OrderSide.BUY, quantity, entry_price
+        ).total
+    )
+    reward_sell_fee = float(
+        calculate_order_fees(
+            PAPER_FEE_SCHEDULE, OrderSide.SELL, quantity, normal_exit_price
+        ).total
+    )
+    stress_sell_fee = float(
+        calculate_order_fees(
+            PAPER_FEE_SCHEDULE, OrderSide.SELL, quantity, stressed_exit_price
+        ).total
+    )
+    if not _q015_reward_covers_loss(
+        quantity,
+        entry_price,
+        normal_exit_price,
+        stressed_exit_price,
+        buy_fee,
+        reward_sell_fee,
+        stress_sell_fee,
+    ):
+        return None
+    return sizing
+
+
+def _q015_reward_covers_loss(
+    quantity: int,
+    entry_price: float,
+    normal_exit_price: float,
+    stressed_exit_price: float,
+    buy_fee: float,
+    reward_sell_fee: float,
+    stress_sell_fee: float,
+) -> bool:
+    """Return the frozen Q015 inclusive fee-aware reward/loss comparison."""
+
+    if type(quantity) is not int or quantity < 1:
+        return False
+    prices = (entry_price, normal_exit_price, stressed_exit_price)
+    fees = (buy_fee, reward_sell_fee, stress_sell_fee)
+    if any(
+        type(value) not in (int, float)
+        or not math.isfinite(float(value))
+        or float(value) <= 0.0
+        for value in prices
+    ):
+        return False
+    if any(
+        type(value) not in (int, float)
+        or not math.isfinite(float(value))
+        or float(value) < 0.0
+        for value in fees
+    ):
+        return False
+    net_reward = (
+        quantity * (normal_exit_price - entry_price)
+        - buy_fee
+        - reward_sell_fee
+    )
+    stressed_loss = (
+        quantity * (entry_price - stressed_exit_price)
+        + buy_fee
+        + stress_sell_fee
+    )
+    return (
+        math.isfinite(net_reward)
+        and math.isfinite(stressed_loss)
+        and net_reward >= stressed_loss
+    )
 
 
 def _exit_reason(
@@ -558,12 +777,18 @@ def run_candle_backtest(
         ):
             index += 1
             continue
-        if not _variant_allows_entry(
-            index, qfq, atr_values, config.strategy_variant
-        ):
+        if not _variant_allows_entry(index, qfq, atr_values, config.strategy_variant):
             index += 1
             continue
-        entry_signal_count += 1
+        is_q015 = (
+            config.strategy_variant
+            is BacktestVariant.Q015_PRIOR_CLOSE_NET_REWARD_RISK_GATE_V1
+        )
+        # Preserve the established baseline/Q013 report semantics: a supported
+        # strategy signal is counted even when no safe next bar exists.  Q015's
+        # candidate signal is counted only after its entry-time gate passes.
+        if not is_q015:
+            entry_signal_count += 1
         next_index = index + 1
         boundary = boundaries[session_date]
         if (
@@ -579,6 +804,29 @@ def run_candle_backtest(
         if atr_qfq is None:
             index += 1
             continue
+        state = RiskState(
+            day_start_equity=day_start_equity,
+            week_start_equity=week_start_equity,
+            daily_pnl=equity - day_start_equity,
+            weekly_pnl=equity - week_start_equity,
+            completed_roundtrips_today=0,
+        )
+        q015_sizing = None  # type: Optional[SizingResult]
+        if is_q015:
+            q015_sizing = _q015_allows_entry(
+                index,
+                qfq,
+                raw,
+                atr_values,
+                next_index=next_index,
+                state=state,
+                config=config,
+                boundaries=boundaries,
+            )
+            if q015_sizing is None:
+                index += 1
+                continue
+            entry_signal_count += 1
         scale = raw[index].close / signal.close
         atr_raw = float(atr_qfq) * scale
         entry_reference = raw[next_index].open
@@ -588,21 +836,16 @@ def run_candle_backtest(
             risk_blocked_count += 1
             index += 1
             continue
-        state = RiskState(
-            day_start_equity=day_start_equity,
-            week_start_equity=week_start_equity,
-            daily_pnl=equity - day_start_equity,
-            weekly_pnl=equity - week_start_equity,
-            completed_roundtrips_today=0,
-        )
-        sizing = size_position(
-            SizingRequest(
-                state=state,
-                entry_limit=entry_price,
-                stop_trigger=stop_price,
-                policy=config.risk_policy,
+        sizing = q015_sizing
+        if sizing is None:
+            sizing = size_position(
+                SizingRequest(
+                    state=state,
+                    entry_limit=entry_price,
+                    stop_trigger=stop_price,
+                    policy=config.risk_policy,
+                )
             )
-        )
         if not sizing.allowed:
             risk_blocked_count += 1
             index += 1
@@ -694,6 +937,16 @@ def run_candle_backtest(
     gross_profit = math.fsum(wins)
     gross_loss = abs(math.fsum(losses))
 
+    q015_assumptions = ()
+    q015_limitations = ()
+    if config.strategy_variant is BacktestVariant.Q015_PRIOR_CLOSE_NET_REWARD_RISK_GATE_V1:
+        q015_assumptions = (
+            "Q015 uses the prior official completed RTH close only as a modelled reward proxy.",
+        )
+        q015_limitations = (
+            "The Q015 prior-close proxy is not an exit target, is not guaranteed to be reached, and remains IN_SAMPLE_POST_HOC until separately sealed evidence exists.",
+        )
+
     return BacktestReport(
         model_id=MODEL_ID,
         status=RESULT_STATUS,
@@ -728,7 +981,7 @@ def run_candle_backtest(
             "Normal exits use completed RAW bar close minus half-spread and 15 bp; stop/close exits use 50 bp.",
             "If a stop and another exit occur in one candle, the stop is applied first.",
             "A proxy entry requires a same-session next bar beginning before close minus 15 minutes.",
-        ),
+        ) + q015_assumptions,
         limitations=(
             "This is exploratory candle evidence, not a broker fill replay or final out-of-sample proof.",
             "Acquisition-date QFQ history is not proven point-in-time and may contain later corporate-action adjustments; timestamp no-lookahead does not remove that limitation.",
@@ -736,7 +989,7 @@ def run_candle_backtest(
             "Daily trend eligibility is trusted as a precomputed point-in-time input.",
             "User symbol-selection effects and survivorship bias are not estimated by this single-symbol engine.",
             "Drawdown is measured only on closed-trade equity and can understate intratrade drawdown.",
-        ),
+        ) + q015_limitations,
         config=config,
         trades=trade_tuple,
     )
@@ -750,7 +1003,11 @@ __all__ = [
     "DatedTrend",
     "MODEL_ID",
     "Q013_ATR_CLOSE_CAP",
+    "Q015_VARIANT_ID",
     "RESULT_STATUS",
     "SessionBoundary",
+    "_prior_completed_rth_close",
+    "_q015_allows_entry",
+    "_q015_reward_covers_loss",
     "run_candle_backtest",
 ]
