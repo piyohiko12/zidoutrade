@@ -159,6 +159,35 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Content-Security-Policy", headers)
         self.assertEqual(headers.get("X-Frame-Options"), "DENY")
 
+    def test_beginner_ui_leads_with_next_action_and_plain_japanese(self):
+        status, _, body = self.request("GET", "/", headers={"Host": self.authority})
+        self.assertEqual(status, 200)
+        html = body.decode("utf-8")
+        for wording in (
+            "まず、ここから",
+            "候補を見る",
+            "この画面は練習用です。お金は動きません",
+            "分析する銘柄を1つ選ぶ",
+            "分析対象に確定",
+            "システムの判断を見る",
+            "損失を抑えるルール",
+            "判断の記録を振り返る",
+            "RSI・ATRなどの用語をやさしく確認",
+        ):
+            self.assertIn(wording, html)
+        self.assertNotIn("ORDER DISABLED", html)
+        self.assertNotIn(">DRAFT<", html)
+        self.assertNotIn(">SELECTION ARMED<", html)
+
+        status, _, script = self.request("GET", "/app.js", headers={"Host": self.authority})
+        self.assertEqual(status, 200)
+        javascript = script.decode("utf-8")
+        self.assertIn('WAIT: "待機中"', javascript)
+        self.assertIn('ENTER: "買い条件が成立"', javascript)
+        self.assertIn('EXIT: "売り条件が成立"', javascript)
+        self.assertIn('node.setAttribute("aria-current", "page")', javascript)
+        self.assertNotIn(".innerHTML", javascript)
+
     def test_state_and_csrf_are_readable_only_through_loopback_host(self):
         status, _, body = self.request("GET", "/api/state", headers={"Host": self.authority})
         self.assertEqual(status, 200)

@@ -2,12 +2,56 @@
 
 const sections = ["overview", "candidates", "decision", "risk", "journal", "system"];
 const titles = {
-  overview: "運用概要",
-  candidates: "候補銘柄",
-  decision: "売買判断",
-  risk: "リスク制御",
-  journal: "株式日記",
-  system: "システム状態",
+  overview: "今日の状況",
+  candidates: "銘柄を選ぶ",
+  decision: "判断を見る",
+  risk: "安全ルール",
+  journal: "振り返り",
+  system: "接続状態",
+};
+
+const selectionLabels = {
+  DRAFT: "選択を保存済み",
+  VALIDATED: "安全条件を確認済み",
+  ARMED_NEXT_SESSION: "次回の分析対象に確定済み",
+  SESSION_LOCKED: "当日の分析対象を固定済み",
+  EXPIRED: "期限切れです。日付と銘柄を選び直してください",
+};
+
+const actionLabels = {
+  WAIT: "待機中",
+  ENTER: "買い条件が成立",
+  EXIT: "売り条件が成立",
+};
+
+const reasonLabels = {
+  NO_SIGNAL: "まだRSIと価格の条件がそろっていません",
+  NO_VALIDATED_CANDIDATE_SNAPSHOT: "分析する銘柄がまだ確定していません",
+  DISARMED: "安全のため分析実行を停止しています",
+  TRADING_HALTED: "この銘柄は現在取引停止中です",
+  NO_VALIDATED_SELECTION: "分析する銘柄がまだ確定していません",
+  DATA_UNAVAILABLE: "判断に必要なデータを取得できません",
+  STALE_DATA: "データが古いため判断を待っています",
+  DAILY_LOSS_LIMIT: "1日の損失上限に達しています",
+  WEEKLY_LOSS_LIMIT: "1週間の損失上限に達しています",
+};
+
+const riskLabels = {
+  planned_risk: "1回の予定リスク",
+  new_entries_permitted: "新しい買い判断",
+  reason: "現在の状態",
+  daily_loss: "今日の損失",
+  weekly_loss: "今週の損失",
+};
+
+const systemLabels = {
+  UI: "この画面",
+  order_api: "注文機能",
+  mode: "動作モード",
+  broker_environment: "将来の検証環境",
+  opend_endpoint: "ローカル接続先",
+  activation_present: "注文の有効化",
+  sensitive_data_exposed: "機密情報の表示",
 };
 
 let csrfToken = "";
@@ -39,8 +83,32 @@ function activateSection(name) {
   });
   document.querySelectorAll(".nav-link").forEach((node) => {
     node.classList.toggle("is-active", node.dataset.section === section);
+    if (node.dataset.section === section) node.setAttribute("aria-current", "page");
+    else node.removeAttribute("aria-current");
   });
   text("page-title", titles[section]);
+}
+
+function explainCode(value) {
+  const code = String(value || "").toUpperCase();
+  return reasonLabels[code] || "現在は安全のため判断を見送っています";
+}
+
+function displayValue(value) {
+  if (value === true) return "許可";
+  if (value === false) return "停止";
+  if (value == null || value === "") return "未設定";
+  return String(value);
+}
+
+function displaySystemValue(label, value) {
+  if (label === "activation_present") return value ? "有効" : "無効（安全）";
+  if (label === "sensitive_data_exposed") return value ? "要確認" : "表示していません";
+  if (label === "mode" && value === "SHADOW_ORDER_DISABLED") return "分析のみ（注文停止）";
+  if (label === "mode" && value === "SIMULATE_ONLY") return "デモ環境向け（注文停止）";
+  if (label === "broker_environment" && value === "SIMULATE") return "デモ環境（現在は未接続）";
+  if (label === "order_api") return "無効（デモ注文を含む）";
+  return displayValue(value);
 }
 
 function recordFromState(state) {
@@ -60,13 +128,15 @@ function renderCandidates(state) {
   const candidates = Array.isArray(state.candidates) ? state.candidates : [];
   const record = recordFromState(state);
   const selectedSymbol = record ? record.selected_symbol : null;
+  const noCandidates = candidates.length === 0;
+  const stateName = record ? record.state : "";
 
   if (!candidates.length) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
     cell.colSpan = 5;
     cell.className = "empty";
-    cell.textContent = "候補データがありません。取引は行われません。";
+    cell.textContent = "候補銘柄はまだありません。現在は表示専用です。操作は必要ありません。";
     row.appendChild(cell);
     tbody.appendChild(row);
   }
@@ -78,7 +148,7 @@ function renderCandidates(state) {
     radio.type = "radio";
     radio.name = "candidate";
     radio.value = String(candidate.symbol || "");
-    radio.disabled = candidate.eligible !== true;
+    radio.disabled = candidate.eligible !== true || stateName === "SESSION_LOCKED";
     radio.checked = candidate.symbol === selectedSymbol;
     radio.setAttribute("aria-label", `${candidate.symbol || "不明"}を選択`);
     choiceCell.appendChild(radio);
@@ -88,7 +158,7 @@ function renderCandidates(state) {
     symbolCell.textContent = candidate.symbol || "—";
 
     const statusCell = document.createElement("td");
-    statusCell.appendChild(makePill(candidate.eligible ? "PASS" : "FAIL", candidate.eligible === true));
+    statusCell.appendChild(makePill(candidate.eligible ? "対象" : "対象外", candidate.eligible === true));
 
     const priorityCell = document.createElement("td");
     priorityCell.textContent = candidate.priority == null ? "—" : String(candidate.priority);
@@ -96,13 +166,30 @@ function renderCandidates(state) {
     const reasonsCell = document.createElement("td");
     reasonsCell.className = "reason-list";
     const reasons = Array.isArray(candidate.reason_codes) ? candidate.reason_codes : [];
-    reasonsCell.textContent = reasons.length ? reasons.join(" · ") : "全適格条件を通過";
+    reasonsCell.textContent = reasons.length ? reasons.map(explainCode).join(" ／ ") : "すべての安全条件を満たしています";
+    choiceCell.dataset.label = "選ぶ";
+    symbolCell.dataset.label = "銘柄";
+    statusCell.dataset.label = "対象にできる？";
+    priorityCell.dataset.label = "表示順";
+    reasonsCell.dataset.label = "理由";
     row.append(choiceCell, symbolCell, statusCell, priorityCell, reasonsCell);
     tbody.appendChild(row);
   });
 
   const noTrade = document.querySelector('input[name="candidate"][value=""]');
-  if (noTrade) noTrade.checked = selectedSymbol == null;
+  if (noTrade) noTrade.checked = Boolean(record && selectedSymbol == null);
+
+  const saveButton = byId("save-selection");
+  const validateButton = byId("validate-selection");
+  const armButton = byId("arm-selection");
+  const selectionAvailability = byId("selection-availability");
+  saveButton.hidden = Boolean(record) && stateName !== "EXPIRED";
+  validateButton.hidden = stateName !== "DRAFT";
+  armButton.hidden = stateName !== "VALIDATED";
+  saveButton.disabled = noCandidates;
+  byId("target-session").disabled = noCandidates || stateName === "SESSION_LOCKED";
+  if (noTrade) noTrade.disabled = noCandidates || stateName === "SESSION_LOCKED";
+  selectionAvailability.hidden = !noCandidates;
 
   const target = (record && record.target_session)
     || (state.overview && state.overview.target_session)
@@ -117,8 +204,8 @@ function renderOverview(state) {
   const record = recordFromState(state);
   text("metric-eligible", `${eligible} / ${candidates.length}`);
   text("metric-session", record ? record.target_session : ((state.overview || {}).target_session || "未設定"));
-  text("metric-state", record ? record.state : "未選択");
-  text("metric-state-note", record && record.selected_symbol ? record.selected_symbol : "選ばなければ取引しません");
+  text("metric-state", record && record.selected_symbol ? record.selected_symbol : record ? "この日は選ばない" : "未選択");
+  text("metric-state-note", record ? (selectionLabels[record.state] || "保存状態を確認してください") : "候補画面から選んでください");
 
   document.querySelectorAll("[data-flow]").forEach((node) => {
     node.classList.toggle("is-current", Boolean(record && node.dataset.flow === record.state));
@@ -129,11 +216,17 @@ function renderDecision(state) {
   const decision = state.decision && typeof state.decision === "object" ? state.decision : {};
   const action = String(decision.action || decision.signal || "WAIT").toUpperCase();
   const badge = byId("decision-badge");
-  badge.textContent = action;
+  badge.textContent = actionLabels[action] || "確認が必要";
   badge.className = `pill ${action === "WAIT" ? "pill-wait" : action === "ENTER" ? "pill-safe" : "pill-info"}`;
+  text("decision-summary", action === "WAIT" ? "条件がそろうまで待ちます" : action === "ENTER" ? "買い候補の条件がそろいました" : action === "EXIT" ? "終了を検討する条件がそろいました" : "判断内容を確認してください");
+  const reasonValues = [];
+  if (Array.isArray(decision.reasons)) reasonValues.push(...decision.reasons);
+  if (Array.isArray(decision.reason_codes)) reasonValues.push(...decision.reason_codes);
+  if (decision.reason) reasonValues.push(decision.reason);
+  text("decision-reasons", reasonValues.length ? reasonValues.map(explainCode).join("。") : "判断に必要なデータを待っています。");
   byId("decision-detail").textContent = Object.keys(decision).length
     ? JSON.stringify(decision, null, 2)
-    : "判断データ待ち（条件が不足している間は WAIT）";
+    : "判断データ待ち（条件が不足している間は待機します）";
 }
 
 function renderRisk(state) {
@@ -149,9 +242,9 @@ function renderRisk(state) {
     article.className = "metric-card";
     const small = document.createElement("span");
     small.className = "metric-label";
-    small.textContent = label;
+    small.textContent = riskLabels[label] || label.replaceAll("_", " ");
     const strong = document.createElement("strong");
-    strong.textContent = typeof value === "object" ? JSON.stringify(value) : String(value);
+    strong.textContent = typeof value === "object" ? JSON.stringify(value) : label === "reason" ? explainCode(value) : displayValue(value);
     article.append(small, strong);
     host.appendChild(article);
   });
@@ -164,7 +257,12 @@ function renderJournal(state) {
   if (!events.length) {
     const empty = document.createElement("div");
     empty.className = "panel empty";
-    empty.textContent = "記録はまだありません。判断が発生すると根拠とともに表示されます。";
+    empty.replaceChildren();
+    const title = document.createElement("strong");
+    title.textContent = "記録はまだありません";
+    const description = document.createElement("p");
+    description.textContent = "銘柄を確定し、判断が発生すると、日付・銘柄・理由がここに表示されます。";
+    empty.append(title, description);
     host.appendChild(empty);
     return;
   }
@@ -175,9 +273,9 @@ function renderJournal(state) {
     time.textContent = event.session_date || "—";
     const detail = document.createElement("div");
     const strong = document.createElement("strong");
-    strong.textContent = event.decision || event.kind || "記録";
+    strong.textContent = actionLabels[String(event.decision || "").toUpperCase()] || event.kind || "記録";
     const paragraph = document.createElement("p");
-    paragraph.textContent = Array.isArray(event.reason_codes) ? event.reason_codes.join(" · ") : "";
+    paragraph.textContent = Array.isArray(event.reason_codes) ? event.reason_codes.map(explainCode).join(" ／ ") : "";
     detail.append(strong, paragraph);
     const symbol = document.createElement("span");
     symbol.className = "pill pill-info";
@@ -196,8 +294,8 @@ function renderSystem(state) {
     const row = document.createElement("div");
     const dt = document.createElement("dt");
     const dd = document.createElement("dd");
-    dt.textContent = label;
-    dd.textContent = typeof value === "object" ? JSON.stringify(value) : String(value);
+    dt.textContent = systemLabels[label] || label.replaceAll("_", " ");
+    dd.textContent = typeof value === "object" ? JSON.stringify(value) : displaySystemValue(label, value);
     row.append(dt, dd);
     list.appendChild(row);
   });
@@ -234,11 +332,11 @@ async function refresh() {
     }
     render(state);
     const pill = byId("connection-pill");
-    pill.textContent = "LOCAL CONNECTED";
+    pill.textContent = "画面データ：正常";
     pill.className = "pill pill-safe";
   } catch (error) {
     const pill = byId("connection-pill");
-    pill.textContent = "DATA UNAVAILABLE";
+    pill.textContent = "画面データ：取得できません";
     pill.className = "pill pill-fail";
     showMessage(`状態を取得できません: ${error.message}`, true);
   } finally {
@@ -264,7 +362,7 @@ async function saveSelection() {
       body: JSON.stringify({ selected_symbol: selectedNode.value || null, target_session: targetSession }),
     });
     const result = await readJson(response);
-    showMessage(result.message || "次セッション候補を新しいリビジョンとして保存しました。");
+    showMessage("選択内容を保存しました。次に「内容を確認」を押してください。");
     await refresh();
   } catch (error) {
     showMessage(`保存できません: ${error.message}`, true);
@@ -277,10 +375,10 @@ async function advanceSelection(action) {
   clearMessage();
   const record = recordFromState(currentState);
   const expected = currentState && currentState.selection ? currentState.selection.sha256 : "";
-  if (!record || !expected) return showMessage("先にDRAFTを保存してください。", true);
+  if (!record || !expected) return showMessage("先に「選択を保存」を押してください。", true);
   if (!csrfToken) return showMessage("安全トークンがありません。画面を更新してください。", true);
   const isArm = action === "arm";
-  if (isArm && !window.confirm(`${record.target_session} の ${record.selected_symbol || "NO TRADE"} をARMします。続けますか？`)) return;
+  if (isArm && !window.confirm(`${record.target_session} の分析対象を「${record.selected_symbol || "この日は選ばない"}」に確定します。注文は行いません。続けますか？`)) return;
   const button = byId(isArm ? "arm-selection" : "validate-selection");
   button.disabled = true;
   try {
@@ -294,7 +392,7 @@ async function advanceSelection(action) {
       body: JSON.stringify(body),
     });
     const result = await readJson(response);
-    showMessage(result.message || `${result.state}として保存しました。`);
+    showMessage(isArm ? "次回の分析対象として確定しました。注文は行われません。" : "安全条件を確認しました。次に「分析対象に確定」を押してください。");
     await refresh();
   } catch (error) {
     showMessage(`更新できません: ${error.message}`, true);
@@ -305,6 +403,9 @@ async function advanceSelection(action) {
 
 document.querySelectorAll(".nav-link").forEach((link) => {
   link.addEventListener("click", () => activateSection(link.dataset.section));
+});
+document.querySelectorAll("[data-go]").forEach((link) => {
+  link.addEventListener("click", () => activateSection(link.dataset.go));
 });
 window.addEventListener("hashchange", () => activateSection(location.hash.slice(1)));
 byId("refresh-button").addEventListener("click", () => { clearMessage(); refresh(); });
