@@ -10,6 +10,10 @@ import unittest
 
 from zidoutrade import dashboard
 from zidoutrade.dashboard import DashboardApplication, DashboardServer
+from zidoutrade.risk_settings import (
+    RiskSettingsConflictError,
+    default_public_risk_settings,
+)
 from zidoutrade.selection import PresentedCandidate, SelectionWorkflow
 
 
@@ -145,6 +149,29 @@ class DashboardTests(unittest.TestCase):
         body = json.dumps(value, separators=(",", ":"))
         return self.request("POST", "/api/selection", body=body, headers=headers or self.valid_headers())
 
+    def request_on(self, application, method, path, body=None, headers=None):
+        original = self.handler_class
+        self.handler_class = dashboard._handler_class(application)
+        try:
+            return self.request(method, path, body=body, headers=headers)
+        finally:
+            self.handler_class = original
+
+    @staticmethod
+    def risk_payload(**changes):
+        value = {
+            "confirmation": "SAVE_NEXT_SESSION_RISK",
+            "daily_loss_limit_basis_points": 75,
+            "expected_sha256": None,
+            "maximum_investment_cents": 50_000,
+            "planned_risk_basis_points": 25,
+            "risk_policy_version": "RSI_RISK_POLICY_V2",
+            "target_session": "2026-08-14",
+            "weekly_loss_limit_basis_points": 200,
+        }
+        value.update(changes)
+        return value
+
     def test_static_ui_has_sidebar_sections_and_explains_rsi_rules(self):
         status, headers, body = self.request("GET", "/", headers={"Host": self.authority})
         self.assertEqual(status, 200)
@@ -156,6 +183,21 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("1.5 ATR", html)
         self.assertIn("SHADOW / 注文機能は無効", html)
         self.assertIn("SIMULATE注文も常に拒否", html)
+        for wording in (
+            "出来高 1.5倍以上",
+            "直前13本の中央値",
+            "スプレッド 0.10%以下",
+            "追いかけ幅 0.50%以下",
+            "現在の保守的な設定",
+            "変更できる絶対上限",
+            "最大 1%",
+            "最大 2%",
+            "最大 5%",
+            "損失額を保証する上限ではありません",
+            "買い代金 + 買い手数料",
+            "保存しても注文機能は有効になりません",
+        ):
+            self.assertIn(wording, html)
         self.assertIn("Content-Security-Policy", headers)
         self.assertEqual(headers.get("X-Frame-Options"), "DENY")
 
@@ -187,6 +229,192 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('EXIT: "売り条件が成立"', javascript)
         self.assertIn('node.setAttribute("aria-current", "page")', javascript)
         self.assertNotIn(".innerHTML", javascript)
+        self.assertIn('fetch("/api/risk-settings"', javascript)
+        self.assertIn('confirmation: "SAVE_NEXT_SESSION_RISK"', javascript)
+        for code in (
+            "VOLUME_HISTORY_INSUFFICIENT",
+            "VOLUME_DATA_INVALID",
+            "VOLUME_CONFIRMATION_MISSING",
+            "PRICE_REFERENCE_INVALID",
+            "PRICE_CONFIRMATION_MISSING",
+            "BREAKOUT_TOO_EXTENDED",
+            "SPREAD_TOO_WIDE",
+        ):
+            self.assertIn(code, javascript)
+
+    def test_risk_settings_state_is_read_only_without_mutation_callback(self):
+        status, _, body = self.request("GET", "/api/state", headers={"Host": self.authority})
+        self.assertEqual(status, 200, body)
+        settings = json.loads(body)["risk_settings"]
+        self.assertFalse(settings["editable"])
+        self.assertTrue(settings["entry_blocked"])
+        self.assertIsNone(settings["maximum_investment_cents"])
+        self.assertEqual(settings["planned_risk_basis_points"], 25)
+        self.assertEqual(settings["daily_loss_limit_basis_points"], 75)
+        self.assertEqual(settings["weekly_loss_limit_basis_points"], 200)
+
+        request_body = json.dumps(self.risk_payload(), separators=(",", ":"))
+        status, _, response = self.request(
+            "POST",
+            "/api/risk-settings",
+            body=request_body,
+            headers=self.valid_headers(),
+        )
+        self.assertEqual(status, 503, response)
+        self.assertEqual(json.loads(response)["error"], "RISK_SETTINGS_READ_ONLY")
+
+    def test_strict_risk_settings_post_passes_typed_update_to_narrow_callback(self):
+        calls = []
+
+        def callback(update):
+            calls.append(update)
+            return {
+                "revision": 1,
+                "saved": True,
+                "target_session": update.target_session,
+            }
+
+        app = DashboardApplication(
+            lambda: self.state,
+            risk_settings_provider=lambda: default_public_risk_settings(editable=True),
+            risk_settings_callback=callback,
+            csrf_token=self.token,
+        )
+        raw = json.dumps(self.risk_payload(), separators=(",", ":"))
+        status, _, body = self.request_on(
+            app,
+            "POST",
+            "/api/risk-settings",
+            body=raw,
+            headers=self.valid_headers(),
+        )
+        self.assertEqual(status, 200, body)
+        self.assertEqual(len(calls), 1)
+        update = calls[0]
+        self.assertEqual(update.policy.maximum_investment_cents, 50_000)
+        self.assertEqual(update.policy.planned_risk_basis_points, 25)
+        self.assertEqual(
+            json.loads(body),
+            {
+                "message": "Risk settings revision saved for a future session.",
+                "revision": 1,
+                "saved": True,
+                "target_session": "2026-08-14",
+            },
+        )
+
+    def test_risk_settings_reject_malformed_types_ranges_order_and_stale_revision(self):
+        calls = []
+
+        def callback(update):
+            calls.append(update)
+            if update.expected_sha256 == "f" * 64:
+                raise RiskSettingsConflictError("synthetic stale revision")
+            return {"revision": 2, "saved": True, "target_session": update.target_session}
+
+        app = DashboardApplication(
+            lambda: self.state,
+            risk_settings_provider=lambda: default_public_risk_settings(editable=True),
+            risk_settings_callback=callback,
+            csrf_token=self.token,
+        )
+        attacks = (
+            {**self.risk_payload(), "admin": True},
+            self.risk_payload(planned_risk_basis_points=True),
+            self.risk_payload(daily_loss_limit_basis_points=201),
+            self.risk_payload(weekly_loss_limit_basis_points=501),
+            self.risk_payload(
+                planned_risk_basis_points=80,
+                daily_loss_limit_basis_points=75,
+            ),
+            self.risk_payload(maximum_investment_cents=0),
+            self.risk_payload(risk_policy_version="V3"),
+        )
+        for attack in attacks:
+            with self.subTest(attack=attack):
+                raw = json.dumps(attack, separators=(",", ":"))
+                status, _, body = self.request_on(
+                    app,
+                    "POST",
+                    "/api/risk-settings",
+                    body=raw,
+                    headers=self.valid_headers(),
+                )
+                self.assertEqual(status, 422, body)
+        self.assertEqual(calls, [])
+
+        stale = json.dumps(
+            self.risk_payload(expected_sha256="f" * 64), separators=(",", ":")
+        )
+        status, _, body = self.request_on(
+            app,
+            "POST",
+            "/api/risk-settings",
+            body=stale,
+            headers=self.valid_headers(),
+        )
+        self.assertEqual(status, 409, body)
+        self.assertEqual(json.loads(body)["error"], "RISK_SETTINGS_CONFLICT")
+
+    def test_risk_settings_security_checks_run_before_callback(self):
+        calls = []
+        app = DashboardApplication(
+            lambda: self.state,
+            risk_settings_provider=lambda: default_public_risk_settings(editable=True),
+            risk_settings_callback=lambda update: calls.append(update),
+            csrf_token=self.token,
+        )
+        raw = json.dumps(self.risk_payload(), separators=(",", ":"))
+        bad_headers = []
+        malicious_host = self.valid_headers()
+        malicious_host["Host"] = "attacker.example"
+        bad_headers.append(malicious_host)
+        malicious_origin = self.valid_headers()
+        malicious_origin["Origin"] = "http://attacker.example"
+        bad_headers.append(malicious_origin)
+        bad_csrf = self.valid_headers()
+        bad_csrf["X-CSRF-Token"] = "wrong"
+        bad_headers.append(bad_csrf)
+        for headers in bad_headers:
+            status, _, _ = self.request_on(
+                app,
+                "POST",
+                "/api/risk-settings",
+                body=raw,
+                headers=headers,
+            )
+            self.assertEqual(status, 403)
+        self.assertEqual(calls, [])
+
+    def test_provider_cannot_spoof_editability_and_large_investment_is_redacted_safely(self):
+        settings = default_public_risk_settings(editable=True)
+        settings.update(
+            {
+                "entry_blocked": False,
+                "maximum_investment_cents": 1_000_000,
+                "revision": 1,
+                "saved": True,
+                "sha256": "e" * 64,
+                "target_session": "2026-08-14",
+            }
+        )
+        app = DashboardApplication(
+            lambda: self.state,
+            risk_settings_provider=lambda: settings,
+            csrf_token=self.token,
+        )
+        public = app.state()["risk_settings"]
+        self.assertFalse(public["editable"])
+        self.assertEqual(public["maximum_investment_cents"], 1_000_000)
+
+        too_large = dict(settings)
+        too_large["maximum_investment_cents"] = 9_007_199_254_740_992
+        with self.assertRaises(ValueError):
+            DashboardApplication(
+                lambda: self.state,
+                risk_settings_provider=lambda: too_large,
+                csrf_token=self.token,
+            ).state()
 
     def test_state_and_csrf_are_readable_only_through_loopback_host(self):
         status, _, body = self.request("GET", "/api/state", headers={"Host": self.authority})

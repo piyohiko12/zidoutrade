@@ -39,7 +39,7 @@ from .strategy import evaluate_strategy
 
 
 MAX_QUOTE_AGE = timedelta(seconds=2)
-MAX_RELATIVE_SPREAD = Decimal("0.0015")
+MAX_RELATIVE_SPREAD = Decimal("0.0010")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SYMBOL = re.compile(r"^US\.[A-Z0-9][A-Z0-9._-]{0,31}$")
 _BUILDER_TOKEN = object()
@@ -299,15 +299,21 @@ def _validate_unsigned_schema(
     )
 
 
-def _risk_payload(state: RiskState) -> Dict[str, Any]:
+def _risk_payload(state: RiskState, policy: RiskPolicy) -> Dict[str, Any]:
+    if type(state) is not RiskState or type(policy) is not RiskPolicy:
+        raise ExecutionEvidenceError("exact risk state and policy are required")
     return {
+        **policy.evidence_payload(),
         "completed_roundtrips_today": state.completed_roundtrips_today,
-        "daily_loss_limit_passed": entry_allowed(state).allowed
-        or state.daily_pnl / state.day_start_equity > -0.0075,
+        "daily_loss_limit_passed": (
+            state.daily_pnl / state.day_start_equity > -policy.daily_loss_fraction
+        ),
         "daily_pnl_fraction": state.daily_pnl / state.day_start_equity,
         "day_start_equity": state.day_start_equity,
         "week_start_equity": state.week_start_equity,
-        "weekly_loss_limit_passed": state.weekly_pnl / state.week_start_equity > -0.02,
+        "weekly_loss_limit_passed": (
+            state.weekly_pnl / state.week_start_equity > -policy.weekly_loss_fraction
+        ),
         "weekly_pnl_fraction": state.weekly_pnl / state.week_start_equity,
     }
 
@@ -472,13 +478,12 @@ def build_entry_decision(
     if type(sizing_request) is not SizingRequest:
         raise ExecutionEvidenceError("an exact SizingRequest is required")
     if (
-        sizing_request.policy != RiskPolicy()
-        or sizing_request.stress != ExecutionStress()
+        sizing_request.stress != ExecutionStress()
         or sizing_request.entry_fees is not PAPER_FEE_SCHEDULE
         or sizing_request.exit_fees is not PAPER_FEE_SCHEDULE
     ):
         raise ExecutionEvidenceError(
-            "entry sizing policy/stress/fees must match the frozen V1 contract"
+            "entry sizing stress/fees must match the frozen execution contract"
         )
     if sizing_request.state.completed_roundtrips_today != context.traded_roundtrips_today:
         raise ExecutionEvidenceError("strategy and risk round-trip counters disagree")
@@ -495,13 +500,17 @@ def build_entry_decision(
     if not sized.allowed or not entry_allowed(sizing_request.state, sizing_request.policy).allowed:
         raise ExecutionEvidenceError("daily/weekly/round-trip risk gate blocked entry")
     risk_payload = {
-        **_risk_payload(sizing_request.state),
+        **_risk_payload(sizing_request.state, sizing_request.policy),
         "allowed_quantity": sized.qty,
+        "entry_cash_required": sized.components.entry_cash_required,
         "entry_fee": sized.components.entry_fee,
         "entry_limit": sizing_request.entry_limit,
         "exit_fee": sized.components.exit_fee,
         "fee_schedule": PAPER_FEE_SCHEDULE.value,
         "notional_cap": sized.notional_cap,
+        "investment_cap_cents": sized.investment_cap_cents,
+        "max_relative_spread": str(MAX_RELATIVE_SPREAD),
+        "observed_relative_spread": str(quote.relative_spread),
         "planned_total_loss": sized.components.planned_total_loss,
         "risk_budget": sized.risk_budget,
         "stop_trigger": sizing_request.stop_trigger,
@@ -534,6 +543,7 @@ def build_exit_decision(
     known_position_quantity: int,
     entry_dispatches_today: int,
     exit_dispatches_today: int,
+    risk_policy: RiskPolicy,
 ) -> ExecutionDecision:
     """Produce one exact full-position SELL decision; risk limits never block exits."""
 
@@ -547,6 +557,8 @@ def build_exit_decision(
         raise ExecutionEvidenceError("exit position/order counters violate V1 policy")
     if type(risk_state) is not RiskState:
         raise ExecutionEvidenceError("an exact RiskState is required")
+    if type(risk_policy) is not RiskPolicy:
+        raise ExecutionEvidenceError("an exact RiskPolicy is required")
     if risk_state.completed_roundtrips_today not in (0, 1):
         raise ExecutionEvidenceError("one-round-trip policy exceeded")
     if context.position is None:
@@ -577,7 +589,10 @@ def build_exit_decision(
         now=now,
         quote=quote,
         strategy_payload=_strategy_payload(context),
-        risk_payload={**_risk_payload(risk_state), "exit_limits_blocking": False},
+        risk_payload={
+            **_risk_payload(risk_state, risk_policy),
+            "exit_limits_blocking": False,
+        },
         signal_bar_end=decision.signal_bar_end,
         completed_roundtrips_today=risk_state.completed_roundtrips_today,
         entry_dispatches_today=entry_count,

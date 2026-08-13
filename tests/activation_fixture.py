@@ -40,7 +40,7 @@ from zidoutrade.models import (
     StrategyContext,
     TrendEligibility,
 )
-from zidoutrade.risk import RiskState, SizingRequest
+from zidoutrade.risk import RiskPolicy, RiskState, SizingRequest
 from zidoutrade.selection import (
     PresentedCandidate,
     SelectionStore,
@@ -76,6 +76,7 @@ def _write_private(path: Path, payload: bytes) -> None:
 def system_config() -> Dict[str, Any]:
     value = json.loads((ROOT / "config" / "system.example.json").read_text("utf-8"))
     value["mode"] = "PAPER_SIMULATE"
+    value["maximum_investment_cents"] = 1_000_000
     return value
 
 
@@ -198,13 +199,17 @@ def create_fixture(runtime_root: Path) -> Dict[str, Any]:
 
 def _bars():
     values = []
-    raw = (
-        (9, 45, 9.90, 10.00, 9.80, 9.90),
-        (10, 0, 9.90, 9.95, 9.80, 9.90),
-        (10, 15, 9.90, 10.10, 9.85, 10.00),
+    prior = tuple(
+        (12, 13 + index // 4, (index % 4) * 15, 9.90, 10.00, 9.80, 9.90, 100_000)
+        for index in range(11)
     )
-    for hour, minute, opening, high, low, close in raw:
-        start = datetime(2026, 8, 13, hour, minute, tzinfo=NY)
+    raw = prior + (
+        (13, 9, 45, 9.90, 10.00, 9.80, 9.90, 100_000),
+        (13, 10, 0, 9.90, 9.951, 9.80, 9.90, 100_000),
+        (13, 10, 15, 9.90, 10.10, 9.85, 10.00, 150_000),
+    )
+    for day, hour, minute, opening, high, low, close, volume in raw:
+        start = datetime(2026, 8, day, hour, minute, tzinfo=NY)
         values.append(
             CompletedBar15m(
                 symbol=SYMBOL,
@@ -214,7 +219,7 @@ def _bars():
                 high=high,
                 low=low,
                 close=close,
-                volume=100_000,
+                volume=volume,
             )
         )
     return tuple(values)
@@ -252,7 +257,7 @@ def signed_decision(
             active_symbol=SYMBOL,
             selected_symbol=SYMBOL,
             bars=_bars(),
-            rsi_values=(29.0, 34.0, 36.0),
+            rsi_values=(None,) * 11 + (29.0, 34.0, 36.0),
             trend=TrendEligibility(True, True, True),
             gates=MarketGates(True, True, True),
             now=now,
@@ -267,6 +272,7 @@ def signed_decision(
                 state=state,
                 entry_limit=price,
                 stop_trigger=price - 0.10,
+                policy=RiskPolicy(maximum_investment_cents=1_000_000),
             ),
             atr_raw=0.10 / 1.5,
             quote=quote,
@@ -277,7 +283,7 @@ def signed_decision(
         active_symbol=SYMBOL,
         selected_symbol=SYMBOL,
         bars=_bars(),
-        rsi_values=(29.0, 34.0, 60.0),
+        rsi_values=(None,) * 11 + (29.0, 34.0, 60.0),
         trend=TrendEligibility(True, True, True),
         gates=MarketGates(True, True, True),
         now=now,
@@ -301,6 +307,7 @@ def signed_decision(
         known_position_quantity=quantity,
         entry_dispatches_today=entry_dispatches_today,
         exit_dispatches_today=exit_dispatches_today,
+        risk_policy=RiskPolicy(maximum_investment_cents=1_000_000),
     )
 
 

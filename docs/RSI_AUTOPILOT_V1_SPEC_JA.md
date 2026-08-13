@@ -67,7 +67,8 @@ DRAFT → VALIDATED → ARMED_NEXT_SESSION → SESSION_LOCKED → EXPIRED
 - 前日終値 > SMA200
 - 前日SMA50 > 5営業日前SMA50
 - SPY前日終値 > SPY SMA200
-- 注文時のspread 15 bp以下（これは候補生成時でなくaction直前のgate）
+- 注文時のbid/ask midpoint基準spread 10 bp（0.10%）以下
+  （これは候補生成時でなくaction直前にも再検証するgate）
 
 契約や追加market-data entitlementが必要なら、不適格として停止します。
 
@@ -109,13 +110,18 @@ QFQ→rawはsession開始時に固定した有限正のadjustment scaleを使い
 1. 直近3本のRSI最小値 <= 30
 2. 1本前RSI <= 35、最新RSI > 35
 3. 最新close > 1本前high
-4. 2.2の環境gate合格
-5. fresh data、spread、market state、calendar合格
-6. 当日未取引、flat、open/pendingなし
-7. risk/notional/daily/weekly/dispatch上限内
-8. 10:00–15:15 ET
+4. `(最新close - 1本前high) / 1本前high <= 0.005`（0.50%以下。境界を含む）
+5. 最新確定足volume >= その直前13本の確定RTH足volume中央値 × 1.5
+6. 2.2の環境gate合格
+7. fresh data、spread、market state、calendar合格
+8. 当日未取引、flat、open/pendingなし
+9. risk/notional/daily/weekly/dispatch上限内
+10. 10:00–15:15 ET
 
-RSIが低いだけでは買いません。反発確認が必須です。
+volume比較の直前13本は、セッションをまたいでも途切れないRTH確定足系列から取ります。
+13本未満、最新または比較対象に0 volumeがある場合は推測や短いfallbackを使わず`WAIT`です。
+1本前highがない、非有限、0以下の場合も`WAIT`です。RSIが低いだけでは買わず、反発、出来高、
+価格突破、追い掛け防止の全確認を必須にします。
 
 将来の発注実装では、entryはfresh askを基準にtickへ切り上げた`ask × 1.0010`以下の
 マーケッタブル指値です。
@@ -135,19 +141,37 @@ RSIが低いだけでは買いません。反発確認が必須です。
 売り指値です。10秒後にcancel・terminal確認・再照合します。全種類のexitとflattenは共有して
 最大2 dispatchです。上限枯渇は`RECOVERY_REQUIRED`です。
 
-## 5. リスク
+## 5. リスク（RSI_RISK_POLICY_V2）
 
-- planned risk: session開始時純資産の0.25%以下
+- planned risk既定: session開始時純資産の0.25%（設定可能なhard max 1%）
 - 1銘柄notional: 10%以下
 - 総notional: 20%以下
 - 最大同時保有: 1
 - 1日: 最大1往復
-- 日次損失: realized + executable-bid unrealizedで0.75%
-- 週次損失: 週初純資産基準で2.0%
+- 日次の新規entry停止線既定: realized + executable-bid unrealizedで0.75%（hard max 2%）
+- 週次の新規entry停止線既定: 週初純資産基準で2.0%（hard max 5%）
+- maximum investment: BUY notional + BUY feeの絶対上限（正の整数cents）
 - 初期paper canary: 1株
 
-0.25%は予定予算で、gapや障害時の損失上限保証ではありません。整数数量`q`は、stop距離、
-保守slippage、entry/exit費用を含む予定損失とnotionalの双方を満たす最大値です。1株未満ならWAIT。
+`planned <= daily <= weekly`を必須とし、整数basis points以外は拒否します。maximum investment未設定
+（`null`）は「無制限」でなく、新規entryをfail-closedでブロックします。残りの日次/週次予算も同時に
+数量上限へ反映します。
+
+0.25%等の割合は予定予算と新規entry停止線で、gap、slippage、fee、通信・市場障害時の実現損失上限を
+保証しません。これらに到達しても既知long positionの照合・exitを妨げません。整数数量`q`は、stop距離、
+保守slippage、entry/exit費用、maximum investment、日次/週次の残予算を満たす最大値です。1株未満ならWAIT。
+
+### 5.1 次回セッション用リスク設定UI
+
+UIは既定read-onlyです。明示されたリポジトリ外・絶対パス・owner-onlyのruntime rootがある場合だけ、
+loopback Host/Origin、CSRF、exact JSON schema、exact int、上限、順序、optimistic concurrencyを検証して
+保存します。canonical JSON + hash + parent hashの追記型revisionを先にdurable化し、その後`latest.json`を
+公開します。当日・過去日への変更を拒否し、未来の対象日にだけ保存します。
+
+UI storeは保存日を「対象日」として扱い、営業日を推測しません。運用時には監査済みexchange calendarで
+営業日を検証し、storeの`policy_for_session(session_date)`がexact matchを返した場合だけ当該policy候補を
+使います。latestを別日へ暗黙適用してはいけません。現在版ではこの設定は表示・永続化までで、注文不能
+hard stopやSHADOW状態を解除せず、runtime decision/order executionには接続しません。
 
 手数料モデルは版を固定します。2026-08-13確認版では、paper評価はmoomoo Japanの米国株デモ
 公開ルール（system usage、settlement、売却時SEC・activity fee）、report-onlyの実口座stressは
@@ -161,6 +185,19 @@ BUY/SELL費用込み数量を一度に再計算します。出力は`ENTER` / `E
 だけで、broker/OpenD import、保存、注文は行いません。`RiskState`、trend、positionは呼び出し側から
 渡された純粋入力であり、権威あるbroker equity/PnL anchorやdurable position basisの証明では
 ありません。そのため、この判定層の追加だけでは§0の注文停止を解除しません。
+
+### 5.2 moomooAI Q012見直しの扱い
+
+2026-08-13のQ012見直しでは、moomooAIが出来高確認、spread縮小、価格追随防止に加え、
+ATR比率`0.02%–1.50%`とturnover rate `0.50%`を提案しました。前3項目だけを決定論的な
+fail-closed条件として採用しました。ATR比率とturnover rateの数値には、この戦略での
+独立した性能根拠がなく、turnoverによる並べ替えは「適格候補からユーザーが選ぶ」非ランキング設計や
+既存の20日売買代金中央値50,000,000 USD gateとも役割が競合するため`RESEARCH_ONLY`です。
+sealed prospective OOSを事前登録して合格するまでproduction条件へ加えません。
+
+moomooAIの回答は検証候補であり、収益性、勝率、損失上限の証明ではありません。割合の損失設定は
+新規entry停止と数量計算に使う予算で、gap、slippage、障害時の実損失を保証しません。質問、回答要約、
+公式仕様との照合は[Q012見直し記録](research/MOOMOO_AI_Q012_REVIEW_JA.md)に保存します。
 
 - [moomoo Japan 米国株デモ取引ルール](https://www.moomoo.com/jp/support/topic7_320)
 - [moomoo Japan 米国株・ETF手数料](https://www.moomoo.com/jp/support/topic7_184)

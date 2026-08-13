@@ -38,7 +38,14 @@ from .models import (
     require_number,
     require_symbol,
 )
-from .risk import PAPER_FEE_SCHEDULE, RiskState, SizingRequest, SizingResult, size_position
+from .risk import (
+    PAPER_FEE_SCHEDULE,
+    RiskPolicy,
+    RiskState,
+    SizingRequest,
+    SizingResult,
+    size_position,
+)
 from .selection import PresentedCandidate, SelectionRecord, SelectionState
 from .strategy import evaluate_strategy
 
@@ -46,7 +53,7 @@ from .strategy import evaluate_strategy
 RSI_PERIOD = 14
 ATR_PERIOD = 14
 ATR_STOP_MULTIPLE = 1.5
-MAX_SPREAD_BPS = 15.0
+MAX_SPREAD_BPS = 10.0
 MAX_QUOTE_AGE = timedelta(seconds=2)
 
 
@@ -80,6 +87,7 @@ class DecisionCycleRequest:
     trend: TrendEligibility
     now: datetime
     position: Optional[PositionSnapshot] = None
+    risk_policy: RiskPolicy = RiskPolicy()
 
     def __post_init__(self) -> None:
         if type(self.indicator_bars) is not IndicatorBarSeries:
@@ -97,6 +105,8 @@ class DecisionCycleRequest:
         require_aware_datetime("now", self.now)
         if self.position is not None and type(self.position) is not PositionSnapshot:
             raise TypeError("position must be an exact PositionSnapshot or None")
+        if type(self.risk_policy) is not RiskPolicy:
+            raise TypeError("risk_policy must be an exact RiskPolicy")
 
 
 @dataclass(frozen=True)
@@ -395,6 +405,7 @@ def run_decision_cycle(request: DecisionCycleRequest) -> DecisionCycleReport:
             stop_trigger=stop_trigger,
             entry_fees=PAPER_FEE_SCHEDULE,
             exit_fees=PAPER_FEE_SCHEDULE,
+            policy=request.risk_policy,
         )
     )
     if not sizing.allowed:

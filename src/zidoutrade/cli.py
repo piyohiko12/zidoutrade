@@ -9,15 +9,21 @@ can trigger.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 from pathlib import Path
 import secrets
 import sys
 from typing import Any, Dict, Optional, Sequence
+from zoneinfo import ZoneInfo
 
 from . import PROGRAM_ID, __version__
 from .config import ConfigError, load_system_config
 from .dashboard import DashboardApplication, DashboardServer
+from .risk_settings import RiskSettingsError, RiskSettingsStore, RiskSettingsUpdate
+
+
+_NEW_YORK = ZoneInfo("America/New_York")
 
 
 def _safe_dashboard_state() -> Dict[str, Any]:
@@ -64,6 +70,14 @@ def _parser() -> argparse.ArgumentParser:
     dashboard = commands.add_parser("dashboard", help="serve the redacted local dashboard")
     dashboard.add_argument("--host", default="127.0.0.1")
     dashboard.add_argument("--port", type=int, default=8765)
+    dashboard.add_argument(
+        "--risk-settings-runtime-root",
+        type=Path,
+        help=(
+            "explicit absolute owner-only directory outside the repository; "
+            "without it risk settings are read-only"
+        ),
+    )
     return parser
 
 
@@ -91,18 +105,52 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command == "dashboard":
         # This fallback UI is deliberately read-only and disarmed. Runtime
         # integration must inject a separately reviewed state provider.
-        app = DashboardApplication(
-            _safe_dashboard_state,
-            selection_callback=None,
-            csrf_token=secrets.token_urlsafe(32),
-        )
         try:
+            risk_store = None
+            if args.risk_settings_runtime_root is not None:
+                risk_store = RiskSettingsStore(
+                    args.risk_settings_runtime_root,
+                    repository_root=Path(__file__).resolve().parents[2],
+                )
+
+            def provide_risk_settings() -> Dict[str, Any]:
+                if risk_store is None:  # pragma: no cover - callback not wired
+                    raise RiskSettingsError("risk settings store is unavailable")
+                return risk_store.public_view(editable=True)
+
+            def save_risk_settings(update: RiskSettingsUpdate) -> Dict[str, Any]:
+                if risk_store is None:  # pragma: no cover - callback not wired
+                    raise RiskSettingsError("risk settings store is unavailable")
+                current = datetime.now(_NEW_YORK)
+                record = risk_store.save_next_session(
+                    update,
+                    current_session_date=current.date().isoformat(),
+                    now=current,
+                )
+                return {
+                    "revision": record.revision,
+                    "saved": True,
+                    "target_session": record.target_session,
+                }
+
+            app = DashboardApplication(
+                _safe_dashboard_state,
+                selection_callback=None,
+                risk_settings_provider=(
+                    provide_risk_settings if risk_store is not None else None
+                ),
+                risk_settings_callback=(
+                    save_risk_settings if risk_store is not None else None
+                ),
+                csrf_token=secrets.token_urlsafe(32),
+            )
             server = DashboardServer(app, host=args.host, port=args.port)
-        except (OSError, ValueError) as exc:
+        except (OSError, RiskSettingsError, ValueError) as exc:
             print(f"dashboard startup failed: {exc}", file=sys.stderr)
             return 2
         print(f"Dashboard: http://{server.address[0]}:{server.address[1]}/")
-        print("Mode: SHADOW / DISARMED / READ_ONLY")
+        settings_mode = "NEXT_SESSION_RISK_EDITABLE" if risk_store else "READ_ONLY"
+        print(f"Mode: SHADOW / DISARMED / {settings_mode}")
         try:
             server.serve_forever()
         except KeyboardInterrupt:

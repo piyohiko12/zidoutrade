@@ -11,9 +11,16 @@ from dataclasses import dataclass, fields
 import json
 import math
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Optional
 
 from . import PROGRAM_ID
+from .risk import (
+    MAX_DAILY_LOSS_LIMIT_BASIS_POINTS,
+    MAX_PLANNED_RISK_BASIS_POINTS,
+    MAX_WEEKLY_LOSS_LIMIT_BASIS_POINTS,
+    RISK_POLICY_VERSION,
+    RiskPolicy,
+)
 
 
 class ConfigError(ValueError):
@@ -33,9 +40,11 @@ class SystemConfig:
     maximum_active_symbols: int
     maximum_round_trips_per_day: int
     maximum_exit_dispatches_per_round_trip: int
-    planned_risk_fraction: float
-    daily_loss_fraction: float
-    weekly_loss_fraction: float
+    risk_policy_version: str
+    planned_risk_basis_points: int
+    daily_loss_limit_basis_points: int
+    weekly_loss_limit_basis_points: int
+    maximum_investment_cents: Optional[int]
     maximum_symbol_notional_fraction: float
     maximum_total_notional_fraction: float
     rsi_period: int
@@ -62,6 +71,8 @@ class SystemConfig:
             raise ConfigError("SESSION_MUST_BE_RTH")
         if self.fee_schedule != "JP_US_PAPER_STOCK_2026_08_13":
             raise ConfigError("FEE_SCHEDULE_VERSION_MISMATCH")
+        if self.risk_policy_version != RISK_POLICY_VERSION:
+            raise ConfigError("RISK_POLICY_VERSION_MISMATCH")
 
         exact_ints = {
             "maximum_watchlist_symbols": (self.maximum_watchlist_symbols, 1, 20),
@@ -80,10 +91,41 @@ class SystemConfig:
             if type(value) is not int or not lower <= value <= upper:
                 raise ConfigError(f"INVALID_{name.upper()}")
 
+        for name, value in (
+            ("planned_risk_basis_points", self.planned_risk_basis_points),
+            ("daily_loss_limit_basis_points", self.daily_loss_limit_basis_points),
+            ("weekly_loss_limit_basis_points", self.weekly_loss_limit_basis_points),
+        ):
+            if type(value) is not int:
+                raise ConfigError(f"INVALID_{name.upper()}")
+        if not (
+            0
+            < self.planned_risk_basis_points
+            <= MAX_PLANNED_RISK_BASIS_POINTS
+        ):
+            raise ConfigError("PLANNED_RISK_BASIS_POINTS_EXCEEDS_HARD_LIMIT")
+        if not (
+            self.planned_risk_basis_points
+            <= self.daily_loss_limit_basis_points
+            <= MAX_DAILY_LOSS_LIMIT_BASIS_POINTS
+        ):
+            raise ConfigError("DAILY_LOSS_LIMIT_BASIS_POINTS_EXCEEDS_HARD_LIMIT")
+        if not (
+            self.daily_loss_limit_basis_points
+            <= self.weekly_loss_limit_basis_points
+            <= MAX_WEEKLY_LOSS_LIMIT_BASIS_POINTS
+        ):
+            raise ConfigError("WEEKLY_LOSS_LIMIT_BASIS_POINTS_EXCEEDS_HARD_LIMIT")
+        if self.maximum_investment_cents is None:
+            if self.mode != "SHADOW":
+                raise ConfigError("MAXIMUM_INVESTMENT_REQUIRED_FOR_PAPER_SIMULATE")
+        elif (
+            type(self.maximum_investment_cents) is not int
+            or self.maximum_investment_cents <= 0
+        ):
+            raise ConfigError("INVALID_MAXIMUM_INVESTMENT_CENTS")
+
         exact_numbers = {
-            "planned_risk_fraction": (self.planned_risk_fraction, 0.0025),
-            "daily_loss_fraction": (self.daily_loss_fraction, 0.0075),
-            "weekly_loss_fraction": (self.weekly_loss_fraction, 0.02),
             "maximum_symbol_notional_fraction": (
                 self.maximum_symbol_notional_fraction,
                 0.1,
@@ -102,6 +144,19 @@ class SystemConfig:
 
     def to_dict(self) -> Dict[str, Any]:
         return {field.name: getattr(self, field.name) for field in fields(self)}
+
+    def to_risk_policy(self) -> RiskPolicy:
+        """Build the exact runtime policy represented by this configuration."""
+
+        return RiskPolicy(
+            risk_policy_version=self.risk_policy_version,
+            planned_risk_basis_points=self.planned_risk_basis_points,
+            daily_loss_limit_basis_points=self.daily_loss_limit_basis_points,
+            weekly_loss_limit_basis_points=self.weekly_loss_limit_basis_points,
+            maximum_investment_cents=self.maximum_investment_cents,
+            max_notional_fraction=self.maximum_symbol_notional_fraction,
+            max_roundtrips_per_day=self.maximum_round_trips_per_day,
+        )
 
 
 def parse_system_config(value: Mapping[str, Any]) -> SystemConfig:

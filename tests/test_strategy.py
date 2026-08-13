@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timedelta
 import unittest
 from zoneinfo import ZoneInfo
@@ -16,10 +17,20 @@ from zidoutrade.strategy import evaluate_strategy
 
 ET = ZoneInfo("America/New_York")
 DAY = (2026, 8, 10)
+PRIOR_DAY = (2026, 8, 7)
 
 
-def make_bar(hour, minute, close, *, high=None, symbol="US.TEST"):
-    start = datetime(*DAY, hour, minute, tzinfo=ET)
+def make_bar(
+    hour,
+    minute,
+    close,
+    *,
+    high=None,
+    symbol="US.TEST",
+    volume=10_000,
+    day=DAY,
+):
+    start = datetime(*day, hour, minute, tzinfo=ET)
     chosen_high = close + 0.25 if high is None else high
     return CompletedBar15m(
         symbol,
@@ -29,27 +40,53 @@ def make_bar(hour, minute, close, *, high=None, symbol="US.TEST"):
         chosen_high,
         close - 0.5,
         close,
-        10_000,
+        volume,
     )
+
+
+def volume_warmup_bars(start_hour=13, start_minute=0):
+    initial = datetime(*PRIOR_DAY, start_hour, start_minute, tzinfo=ET)
+    result = []
+    for index in range(11):
+        at = initial + timedelta(minutes=15 * index)
+        result.append(
+            make_bar(
+                at.hour,
+                at.minute,
+                29.0,
+                high=29.25,
+                day=PRIOR_DAY,
+            )
+        )
+    return tuple(result)
 
 
 def entry_bars(start_hour=9, start_minute=30):
     initial = datetime(*DAY, start_hour, start_minute, tzinfo=ET)
-    specs = ((30.0, 30.25), (31.0, 31.5), (32.0, 32.25))
-    result = []
-    for index, (close, high) in enumerate(specs):
+    specs = (
+        (30.0, 30.25, 10_000),
+        (31.0, 31.9, 10_000),
+        (32.0, 32.25, 15_000),
+    )
+    result = list(volume_warmup_bars())
+    for index, (close, high, volume) in enumerate(specs):
         at = initial + timedelta(minutes=15 * index)
-        result.append(make_bar(at.hour, at.minute, close, high=high))
+        result.append(
+            make_bar(at.hour, at.minute, close, high=high, volume=volume)
+        )
     return tuple(result)
 
 
 def context(**overrides):
     bars = overrides.pop("bars", entry_bars())
+    rsi_values = overrides.pop("rsi_values", (29.0, 35.0, 35.0001))
+    if len(rsi_values) == 3 and len(bars) > 3:
+        rsi_values = (None,) * (len(bars) - 3) + tuple(rsi_values)
     defaults = dict(
         active_symbol="US.TEST",
         selected_symbol="US.TEST",
         bars=bars,
-        rsi_values=(29.0, 35.0, 35.0001),
+        rsi_values=rsi_values,
         trend=TrendEligibility(True, True, True),
         gates=MarketGates(True, True, True),
         now=bars[-1].end + timedelta(seconds=2),
@@ -126,9 +163,54 @@ class EntryDecisionTests(unittest.TestCase):
 
     def test_close_must_be_strictly_above_previous_high(self):
         bars = list(entry_bars())
-        bars[-1] = make_bar(10, 0, 31.5, high=31.75)
+        bars[-1] = make_bar(10, 0, 31.9, high=32.0, volume=15_000)
         result = evaluate_strategy(context(bars=tuple(bars)))
         self.assertIn(ReasonCode.PRICE_CONFIRMATION_MISSING, result.reasons)
+
+    def test_signal_volume_must_reach_1_5_times_previous_13_bar_median(self):
+        exact = evaluate_strategy(context())
+        self.assertEqual(exact.action, DecisionAction.ENTER)
+
+        bars = list(entry_bars())
+        bars[-1] = replace(bars[-1], volume=14_999)
+        below = evaluate_strategy(context(bars=tuple(bars)))
+        self.assertIn(ReasonCode.VOLUME_CONFIRMATION_MISSING, below.reasons)
+
+    def test_volume_history_and_zero_volume_fail_closed(self):
+        insufficient = entry_bars()[-13:]
+        result = evaluate_strategy(context(bars=insufficient))
+        self.assertIn(ReasonCode.VOLUME_HISTORY_INSUFFICIENT, result.reasons)
+
+        bars = list(entry_bars())
+        bars[-2] = replace(bars[-2], volume=0)
+        invalid_reference = evaluate_strategy(context(bars=tuple(bars)))
+        self.assertIn(ReasonCode.VOLUME_DATA_INVALID, invalid_reference.reasons)
+
+        bars = list(entry_bars())
+        bars[-1] = replace(bars[-1], volume=0)
+        invalid_signal = evaluate_strategy(context(bars=tuple(bars)))
+        self.assertIn(ReasonCode.VOLUME_DATA_INVALID, invalid_signal.reasons)
+
+    def test_breakout_extension_at_0_5_percent_is_inclusive(self):
+        bars = list(entry_bars())
+        bars[-2] = make_bar(9, 45, 100.0, high=100.0, volume=10_000)
+        bars[-1] = make_bar(10, 0, 100.5, high=100.75, volume=15_000)
+        at_boundary = evaluate_strategy(context(bars=tuple(bars)))
+        self.assertEqual(at_boundary.action, DecisionAction.ENTER)
+
+        bars[-1] = make_bar(10, 0, 100.5001, high=100.75, volume=15_000)
+        above = evaluate_strategy(context(bars=tuple(bars)))
+        self.assertIn(ReasonCode.BREAKOUT_TOO_EXTENDED, above.reasons)
+
+    def test_missing_prior_price_reference_fails_closed(self):
+        only_signal = entry_bars()[-1:]
+        result = evaluate_strategy(context(bars=only_signal, rsi_values=(36.0,)))
+        self.assertIn(ReasonCode.PRICE_REFERENCE_INVALID, result.reasons)
+
+        corrupted = list(entry_bars())
+        object.__setattr__(corrupted[-2], "high", 0.0)
+        invalid = evaluate_strategy(context(bars=tuple(corrupted)))
+        self.assertIn(ReasonCode.PRICE_REFERENCE_INVALID, invalid.reasons)
 
     def test_entry_window_boundaries_are_inclusive(self):
         # Recent RSI can span sessions.  This is the earliest valid RTH signal:
@@ -138,10 +220,10 @@ class EntryDecisionTests(unittest.TestCase):
             "US.TEST", prior_start, prior_start + timedelta(minutes=15),
             30.0, 30.25, 29.5, 30.0, 10_000,
         )
-        at_ten = (
+        at_ten = volume_warmup_bars() + (
             prior,
-            make_bar(9, 30, 31.0, high=31.5),
-            make_bar(9, 45, 32.0, high=32.25),
+            make_bar(9, 30, 31.0, high=31.9),
+            make_bar(9, 45, 32.0, high=32.25, volume=15_000),
         )
         at_close = entry_bars(14, 30)  # latest completed bar ends at 15:15
         self.assertEqual(evaluate_strategy(context(bars=at_ten)).action, DecisionAction.ENTER)
@@ -151,16 +233,16 @@ class EntryDecisionTests(unittest.TestCase):
         previous_day = (2026, 8, 7)
         prior_one_start = datetime(*previous_day, 15, 30, tzinfo=ET)
         prior_two_start = datetime(*previous_day, 15, 45, tzinfo=ET)
-        too_early = (
+        too_early = volume_warmup_bars(12, 45) + (
             CompletedBar15m(
                 "US.TEST", prior_one_start, prior_one_start + timedelta(minutes=15),
                 30.0, 30.25, 29.5, 30.0, 10_000,
             ),
             CompletedBar15m(
                 "US.TEST", prior_two_start, prior_two_start + timedelta(minutes=15),
-                31.0, 31.5, 30.5, 31.0, 10_000,
+                31.0, 31.9, 30.5, 31.0, 10_000,
             ),
-            make_bar(9, 30, 32.0, high=32.25),
+            make_bar(9, 30, 32.0, high=32.25, volume=15_000),
         )  # latest completed bar ends at 09:45
         result = evaluate_strategy(context(bars=too_early))
         self.assertIn(ReasonCode.OUTSIDE_ENTRY_WINDOW, result.reasons)

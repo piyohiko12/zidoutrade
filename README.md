@@ -20,7 +20,7 @@
 - 確定15分足によるWilder RSI(14)とATR(14)
 - RSI 30以下 → 35回復 → 前足高値突破を必須とするエントリー
 - RSI 60、1.5 ATR stop、8本/2時間、引け15分前による退出
-- 0.25%予定リスク、日次0.75%・週次2%停止、1日1往復
+- V2既定値は0.25%予定リスク、日次0.75%・週次2%の新規買い停止線、1日1往復
 - durable intent、注文・position照合、at-most-once設計の検証コード（送信は停止中）
 - ローカルUI、判断理由、リスク状態、株式日記への導線
 - 注文を出さないshadow比較（選択銘柄・全候補等ウェイト・固定baseline）
@@ -59,6 +59,37 @@ CLIはinstallせずにも使えます。
 PYTHONPATH=src python3 -m zidoutrade --help
 PYTHONPATH=src python3 -m zidoutrade dashboard --host 127.0.0.1 --port 8765
 ```
+
+### 安全設定UI
+
+ダッシュボードは既定で**表示専用**です。表示する保守的な既定値と、ユーザーが変更できる絶対上限を
+分けています。
+
+| 項目 | 保守的な既定値 | 絶対上限 |
+|---|---:|---:|
+| 1回の予定損失 | 0.25% | 1% |
+| 1日の新規買い停止線 | 0.75% | 2% |
+| 1週間の新規買い停止線 | 2% | 5% |
+
+これらは数量計算と新規買いを止める基準であり、実現損失の保証上限ではありません。窓開け、
+スリッページ、手数料、通信・市場障害により実損失は超過し得ます。保有positionの売却は停止線で
+妨げません。`maximum_investment_cents`は**BUY notional + BUY fee**の上限で、未設定（`null`）は
+無制限ではなく、新規買いをブロックします。
+
+保存を有効にする場合だけ、リポジトリ外の既存・絶対パス・owner-onlyディレクトリを明示します。
+登録、契約、課金、追加インストールは不要です。
+
+```bash
+mkdir -m 700 /absolute/private/zidoutrade-risk-settings
+PYTHONPATH=src python3 -m zidoutrade dashboard \
+  --host 127.0.0.1 --port 8765 \
+  --risk-settings-runtime-root /absolute/private/zidoutrade-risk-settings
+```
+
+保存物はcanonical JSON、SHA-256、親hashを持つ追記型revisionです。変更は未来の対象日にだけ保存し、
+当日・過去日の変更は拒否します。保存した日付が取引所営業日かは、このUIでは推測しません。運用側が
+監査済み取引所カレンダーと完全一致させ、`policy_for_session()`も対象日の完全一致時だけpolicyを返します。
+この設定UIは現時点の注文不能hard stopを解除せず、設定を保存しても注文は0件です。
 
 ## SIMULATE注文を有効にする前の必須作業
 

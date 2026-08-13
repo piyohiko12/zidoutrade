@@ -29,7 +29,7 @@ from zidoutrade.models import (
     ReasonCode,
     TrendEligibility,
 )
-from zidoutrade.risk import RiskBlockReason, RiskState
+from zidoutrade.risk import RiskBlockReason, RiskPolicy, RiskState
 from zidoutrade.selection import (
     PresentedCandidate,
     SelectionState,
@@ -89,16 +89,19 @@ def completed_bars(calendar, *, qfq_multiplier=1.0):
     bars = []
     for index, (start, close) in enumerate(zip(starts, closes)):
         opening = closes[index - 1] if index else close
+        high = max(opening, close) + 0.1 * qfq_multiplier
+        if index == len(closes) - 2:
+            high = closes[-1] / 1.004
         bars.append(
             CompletedBar15m(
                 symbol=SYMBOL,
                 start=start,
                 end=start + timedelta(minutes=15),
                 open=opening,
-                high=max(opening, close) + 0.1 * qfq_multiplier,
+                high=high,
                 low=min(opening, close) - 0.1 * qfq_multiplier,
                 close=close,
-                volume=1_000_000,
+                volume=1_500_000 if index == len(closes) - 1 else 1_000_000,
             )
         )
     return tuple(bars)
@@ -163,6 +166,7 @@ def request(**changes):
         locked_selection=locked_selection(),
         calendar=calendar,
         risk_state=risk_state(),
+        risk_policy=RiskPolicy(maximum_investment_cents=1_000_000),
         trend=TrendEligibility(True, True, True),
         now=now,
     )
@@ -230,6 +234,31 @@ class EntryCycleTests(unittest.TestCase):
 
 
 class FailClosedCycleTests(unittest.TestCase):
+    def test_spread_gate_is_10_bps_inclusive_and_rejects_above(self):
+        base = request()
+
+        def bid_for_spread_bps(ask, spread_bps):
+            fraction = spread_bps / 10_000.0
+            return ask * (2.0 - fraction) / (2.0 + fraction)
+
+        at_limit = replace(
+            base.quote,
+            bid=bid_for_spread_bps(base.quote.ask, 10.0),
+        )
+        self.assertAlmostEqual(at_limit.spread_bps, 10.0)
+        self.assertEqual(
+            run_decision_cycle(replace(base, quote=at_limit)).action,
+            DecisionAction.ENTER,
+        )
+
+        above_limit = replace(
+            base.quote,
+            bid=bid_for_spread_bps(base.quote.ask, 10.001),
+        )
+        result = run_decision_cycle(replace(base, quote=above_limit))
+        self.assertEqual(result.wait_reasons, (CycleWaitReason.STRATEGY_WAIT,))
+        self.assertIn(ReasonCode.SPREAD_TOO_WIDE, result.strategy.reasons)
+
     def test_unlocked_or_unpermitted_selection_waits(self):
         locked = locked_selection()
         unlocked = replace(locked, state=SelectionState.ARMED_NEXT_SESSION, locked_at=None)

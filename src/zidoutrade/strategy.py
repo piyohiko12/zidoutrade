@@ -8,6 +8,8 @@ explain every blocked condition without inventing a score.
 from __future__ import annotations
 
 from datetime import time, timedelta
+import math
+from statistics import median
 from typing import List, Optional
 
 from .indicators import validate_bar_series
@@ -28,6 +30,9 @@ EXIT_THRESHOLD = 60.0
 MAX_HOLD_BARS = 8
 MAX_HOLD_DURATION = timedelta(hours=2)
 CLOSE_EXIT_LEAD = timedelta(minutes=15)
+VOLUME_LOOKBACK_BARS = 13
+VOLUME_CONFIRMATION_MULTIPLE = 1.5
+MAX_BREAKOUT_EXTENSION = 0.005
 
 
 def _decision(
@@ -127,8 +132,28 @@ def evaluate_strategy(context: StrategyContext) -> StrategyDecision:
         if not (previous_rsi <= RECOVERY_THRESHOLD < current_rsi):
             reasons.append(ReasonCode.RSI_RECOVERY_NOT_CONFIRMED)
 
-    if len(context.bars) < 2 or latest.close <= context.bars[-2].high:
-        reasons.append(ReasonCode.PRICE_CONFIRMATION_MISSING)
+    if len(context.bars) <= VOLUME_LOOKBACK_BARS:
+        reasons.append(ReasonCode.VOLUME_HISTORY_INSUFFICIENT)
+    else:
+        reference_bars = context.bars[-(VOLUME_LOOKBACK_BARS + 1) : -1]
+        reference_volumes = tuple(bar.volume for bar in reference_bars)
+        if latest.volume <= 0.0 or any(volume <= 0.0 for volume in reference_volumes):
+            reasons.append(ReasonCode.VOLUME_DATA_INVALID)
+        elif latest.volume < VOLUME_CONFIRMATION_MULTIPLE * median(reference_volumes):
+            reasons.append(ReasonCode.VOLUME_CONFIRMATION_MISSING)
+
+    if len(context.bars) < 2:
+        reasons.append(ReasonCode.PRICE_REFERENCE_INVALID)
+    else:
+        prior_high = context.bars[-2].high
+        # CompletedBar15m already rejects this, but keep the strategy boundary
+        # fail-closed if its input contract is ever widened.
+        if not math.isfinite(prior_high) or prior_high <= 0.0:
+            reasons.append(ReasonCode.PRICE_REFERENCE_INVALID)
+        elif latest.close <= prior_high:
+            reasons.append(ReasonCode.PRICE_CONFIRMATION_MISSING)
+        elif (latest.close - prior_high) / prior_high > MAX_BREAKOUT_EXTENSION:
+            reasons.append(ReasonCode.BREAKOUT_TOO_EXTENDED)
 
     if reasons:
         return StrategyDecision(DecisionAction.WAIT, tuple(reasons), latest.end)

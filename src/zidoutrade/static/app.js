@@ -34,6 +34,13 @@ const reasonLabels = {
   STALE_DATA: "データが古いため判断を待っています",
   DAILY_LOSS_LIMIT: "1日の損失上限に達しています",
   WEEKLY_LOSS_LIMIT: "1週間の損失上限に達しています",
+  VOLUME_HISTORY_INSUFFICIENT: "出来高を比べる直前13本がそろっていません",
+  VOLUME_DATA_INVALID: "出来高データに0または不正な値があるため待機します",
+  VOLUME_CONFIRMATION_MISSING: "出来高が直前13本の中央値の1.5倍に届いていません",
+  PRICE_REFERENCE_INVALID: "比較する直前高値を確認できません",
+  PRICE_CONFIRMATION_MISSING: "価格が直前高値を上回っていません",
+  BREAKOUT_TOO_EXTENDED: "直前高値から0.50%を超えて上昇したため追いかけません",
+  SPREAD_TOO_WIDE: "売値と買値の開きが0.10%を超えています",
 };
 
 const riskLabels = {
@@ -250,6 +257,92 @@ function renderRisk(state) {
   });
 }
 
+function formatBasisPoints(value) {
+  if (!Number.isInteger(value)) return "—";
+  const whole = Math.floor(value / 100);
+  const fraction = String(value % 100).padStart(2, "0");
+  return `${whole}.${fraction}%`;
+}
+
+function basisPointsInput(value) {
+  if (!Number.isInteger(value)) return "";
+  return `${Math.floor(value / 100)}.${String(value % 100).padStart(2, "0")}`;
+}
+
+function centsInput(value) {
+  if (!Number.isSafeInteger(value) || value <= 0) return "";
+  return `${Math.floor(value / 100)}.${String(value % 100).padStart(2, "0")}`;
+}
+
+function displayInvestmentCents(value) {
+  if (!Number.isSafeInteger(value) || value <= 0) return "未設定（新規買い停止）";
+  return new Intl.NumberFormat("ja-JP", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value / 100);
+}
+
+function renderRiskSettings(state) {
+  const settings = state.risk_settings && typeof state.risk_settings === "object"
+    ? state.risk_settings
+    : {};
+  text("current-planned-risk", formatBasisPoints(settings.planned_risk_basis_points));
+  text("current-daily-limit", formatBasisPoints(settings.daily_loss_limit_basis_points));
+  text("current-weekly-limit", formatBasisPoints(settings.weekly_loss_limit_basis_points));
+  text("current-investment-limit", displayInvestmentCents(settings.maximum_investment_cents));
+
+  const status = byId("risk-settings-status");
+  if (settings.saved === true) {
+    status.textContent = settings.entry_blocked
+      ? `保存済み r${settings.revision}・新規買い停止`
+      : `保存済み r${settings.revision}`;
+    status.className = settings.entry_blocked ? "pill pill-wait" : "pill pill-safe";
+  } else {
+    status.textContent = "既定値・新規買い停止";
+    status.className = "pill pill-wait";
+  }
+
+  const editable = settings.editable === true;
+  const readonly = byId("risk-settings-readonly");
+  readonly.hidden = editable;
+  const inputs = [
+    "risk-target-session",
+    "risk-planned-percent",
+    "risk-daily-percent",
+    "risk-weekly-percent",
+    "risk-investment-dollars",
+  ];
+  inputs.forEach((id) => { byId(id).disabled = !editable; });
+  byId("save-risk-settings").disabled = !editable;
+
+  const target = settings.target_session
+    || (state.overview && state.overview.target_session)
+    || "";
+  byId("risk-target-session").value = target;
+  byId("risk-planned-percent").value = basisPointsInput(settings.planned_risk_basis_points);
+  byId("risk-daily-percent").value = basisPointsInput(settings.daily_loss_limit_basis_points);
+  byId("risk-weekly-percent").value = basisPointsInput(settings.weekly_loss_limit_basis_points);
+  byId("risk-investment-dollars").value = centsInput(settings.maximum_investment_cents);
+}
+
+function exactDecimalUnits(rawValue, label, maximumUnits, allowEmpty = false) {
+  const value = String(rawValue || "").trim();
+  if (allowEmpty && value === "") return null;
+  if (!/^\d+(?:\.\d{1,2})?$/.test(value)) {
+    throw new Error(`${label}は小数点以下2桁までで入力してください`);
+  }
+  const [whole, fraction = ""] = value.split(".");
+  const units = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
+  if (units <= 0n || units > BigInt(maximumUnits)) {
+    throw new Error(`${label}が安全範囲を超えています`);
+  }
+  const result = Number(units);
+  if (!Number.isSafeInteger(result)) throw new Error(`${label}が大き過ぎます`);
+  return result;
+}
+
 function renderJournal(state) {
   const host = byId("journal-list");
   host.replaceChildren();
@@ -307,6 +400,7 @@ function render(state) {
   renderCandidates(state);
   renderDecision(state);
   renderRisk(state);
+  renderRiskSettings(state);
   renderJournal(state);
   renderSystem(state);
 }
@@ -401,6 +495,74 @@ async function advanceSelection(action) {
   }
 }
 
+async function saveRiskSettings(event) {
+  event.preventDefault();
+  clearMessage();
+  const settings = currentState && currentState.risk_settings;
+  if (!settings || settings.editable !== true) {
+    return showMessage("安全設定は表示専用です。保存先を指定して起動してください。", true);
+  }
+  if (!csrfToken) return showMessage("安全トークンがありません。画面を更新してください。", true);
+
+  let planned;
+  let daily;
+  let weekly;
+  let maximumInvestment;
+  try {
+    planned = exactDecimalUnits(byId("risk-planned-percent").value, "1回の予定損失", 100);
+    daily = exactDecimalUnits(byId("risk-daily-percent").value, "1日の停止線", 200);
+    weekly = exactDecimalUnits(byId("risk-weekly-percent").value, "1週間の停止線", 500);
+    maximumInvestment = exactDecimalUnits(
+      byId("risk-investment-dollars").value,
+      "最大投資額",
+      Number.MAX_SAFE_INTEGER,
+      true,
+    );
+  } catch (error) {
+    return showMessage(error.message, true);
+  }
+  if (!(planned <= daily && daily <= weekly)) {
+    return showMessage("1回の予定損失 ≤ 1日の停止線 ≤ 1週間の停止線にしてください。", true);
+  }
+  const targetSession = byId("risk-target-session").value;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(targetSession)) {
+    return showMessage("適用する対象日を選んでください。", true);
+  }
+  const capText = maximumInvestment == null
+    ? "最大投資額は未設定（新規買い停止）"
+    : `最大投資額は ${displayInvestmentCents(maximumInvestment)}（買い代金 + 買い手数料）`;
+  if (!window.confirm(`${targetSession} から安全設定を適用します。${capText}です。注文機能は有効になりません。保存しますか？`)) return;
+
+  const button = byId("save-risk-settings");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/risk-settings", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+      body: JSON.stringify({
+        confirmation: "SAVE_NEXT_SESSION_RISK",
+        daily_loss_limit_basis_points: daily,
+        expected_sha256: settings.sha256 || null,
+        maximum_investment_cents: maximumInvestment,
+        planned_risk_basis_points: planned,
+        risk_policy_version: "RSI_RISK_POLICY_V2",
+        target_session: targetSession,
+        weekly_loss_limit_basis_points: weekly,
+      }),
+    });
+    await readJson(response);
+    showMessage("次回セッション用の安全設定を保存しました。注文機能は停止したままです。");
+    await refresh();
+  } catch (error) {
+    showMessage(`安全設定を保存できません: ${error.message}`, true);
+  } finally {
+    const editable = currentState && currentState.risk_settings
+      && currentState.risk_settings.editable === true;
+    button.disabled = !editable;
+  }
+}
+
 document.querySelectorAll(".nav-link").forEach((link) => {
   link.addEventListener("click", () => activateSection(link.dataset.section));
 });
@@ -412,6 +574,7 @@ byId("refresh-button").addEventListener("click", () => { clearMessage(); refresh
 byId("save-selection").addEventListener("click", saveSelection);
 byId("validate-selection").addEventListener("click", () => advanceSelection("validate"));
 byId("arm-selection").addEventListener("click", () => advanceSelection("arm"));
+byId("risk-settings-form").addEventListener("submit", saveRiskSettings);
 
 activateSection(location.hash.slice(1));
 refresh();

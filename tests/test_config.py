@@ -17,6 +17,11 @@ class SystemConfigTests(unittest.TestCase):
         config = parse_system_config(self.value)
         self.assertEqual(config.mode, "SHADOW")
         self.assertEqual(config.broker_environment, "SIMULATE")
+        self.assertEqual(config.planned_risk_basis_points, 25)
+        self.assertEqual(config.daily_loss_limit_basis_points, 75)
+        self.assertEqual(config.weekly_loss_limit_basis_points, 200)
+        self.assertIsNone(config.maximum_investment_cents)
+        self.assertIsNone(config.to_risk_policy().maximum_investment_cents)
 
     def test_real_and_nonloopback_fail_closed(self):
         for key, value in (
@@ -48,6 +53,38 @@ class SystemConfigTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             parse_system_config(changed)
 
+    def test_risk_limits_accept_hard_boundaries_and_reject_unsafe_values(self):
+        changed = dict(self.value)
+        changed.update(
+            planned_risk_basis_points=100,
+            daily_loss_limit_basis_points=200,
+            weekly_loss_limit_basis_points=500,
+            maximum_investment_cents=1,
+        )
+        config = parse_system_config(changed)
+        self.assertEqual(config.to_risk_policy().planned_risk_basis_points, 100)
+        for key, value in (
+            ("planned_risk_basis_points", 101),
+            ("daily_loss_limit_basis_points", 201),
+            ("weekly_loss_limit_basis_points", 501),
+            ("maximum_investment_cents", 0),
+            ("maximum_investment_cents", 10.5),
+        ):
+            with self.subTest(key=key):
+                invalid = dict(self.value)
+                invalid[key] = value
+                with self.assertRaises(ConfigError):
+                    parse_system_config(invalid)
+
+    def test_paper_simulate_requires_explicit_positive_investment_limit(self):
+        changed = dict(self.value)
+        changed["mode"] = "PAPER_SIMULATE"
+        with self.assertRaisesRegex(ConfigError, "MAXIMUM_INVESTMENT_REQUIRED"):
+            parse_system_config(changed)
+        changed["maximum_investment_cents"] = 100_000
+        config = parse_system_config(changed)
+        self.assertEqual(config.maximum_investment_cents, 100_000)
+
     def test_bool_is_not_an_integer(self):
         changed = dict(self.value)
         changed["maximum_active_symbols"] = True
@@ -57,7 +94,9 @@ class SystemConfigTests(unittest.TestCase):
     def test_load_rejects_nan(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
-            path.write_text(json.dumps(self.value).replace("0.0025", "NaN"))
+            invalid = dict(self.value)
+            invalid["rsi_exit"] = float("nan")
+            path.write_text(json.dumps(invalid))
             with self.assertRaises(ConfigError):
                 load_system_config(path)
 

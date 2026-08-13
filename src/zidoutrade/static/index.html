@@ -175,16 +175,51 @@
             <ul id="exit-rules"><li>1.5 ATR分下がったら損失を限定</li><li>RSIが60以上になったら終了</li><li>最長2時間で終了</li><li>市場が閉まる15分前までに終了</li></ul>
           </article>
         </div>
+        <article class="panel q012-panel" aria-labelledby="q012-title">
+          <div class="panel-title"><div><p class="eyebrow">買い判断の追加確認（Q012）</p><h3 id="q012-title">勢い・売買しやすさ・追いかけ過ぎを確認</h3></div><span class="pill pill-info">3つすべて必要</span></div>
+          <div class="q012-grid">
+            <div><strong>出来高 1.5倍以上</strong><p>シグナルの確定足の出来高が、直前13本の中央値の1.5倍以上か確認します。少なければ待機します。</p></div>
+            <div><strong>スプレッド 0.10%以下</strong><p>最新の売値と買値の開きが0.10%以下か確認します。開きが大きいときは待機します。</p></div>
+            <div><strong>追いかけ幅 0.50%以下</strong><p>直前高値を上回っても、上回り幅が0.50%を超えたら高値追いを避けて待機します。</p></div>
+          </div>
+          <p class="field-help">これらは不利な場面を避ける確認条件で、値上がりや利益を保証するものではありません。</p>
+        </article>
         <details class="panel glossary"><summary>RSI・ATRなどの用語をやさしく確認</summary><dl><div><dt>RSI</dt><dd>買われ過ぎ・売られ過ぎの目安。0〜100で表します。</dd></div><div><dt>ATR</dt><dd>値動きの大きさの目安。損失を抑える基準に使います。</dd></div><div><dt>SHADOW</dt><dd>判断だけを記録し、注文は出さない練習モードです。</dd></div><div><dt>Wilder RSI(14)</dt><dd>直近14期間を使う、RSIの標準的な計算方法です。</dd></div><div><dt>RTH</dt><dd>米国市場の通常取引時間です。時間外の値動きは使いません。</dd></div></dl></details>
       </section>
 
       <section id="risk" class="workspace-section" aria-labelledby="risk-title" hidden>
         <div class="section-heading"><div><p class="eyebrow">詳しい情報</p><h2 id="risk-title">損失を抑えるルール</h2></div><span class="quiet">迷ったら何もしない</span></div>
-        <div class="rule-grid">
-          <article class="rule-card"><strong>0.25%</strong><span>1回の予定損失</span><p>口座資産に対する上限</p></article>
-          <article class="rule-card"><strong>0.75%</strong><span>1日の損失上限</span><p>超えたら新しい判断を停止</p></article>
-          <article class="rule-card"><strong>2%</strong><span>1週間の損失上限</span><p>超えたら新しい判断を停止</p></article>
-          <article class="rule-card"><strong>1往復</strong><span>1日の回数</span><p>買いと売りを1組まで</p></article>
+        <article class="panel risk-current-panel">
+          <div class="panel-title"><div><p class="eyebrow">現在の保守的な設定</p><h3>次回セッション用の予定値</h3></div><span id="risk-settings-status" class="pill pill-wait">読み込み中</span></div>
+          <div class="rule-grid">
+            <article class="rule-card current-setting"><strong id="current-planned-risk">0.25%</strong><span>1回の予定損失</span><p>新規買いの数量計算に使う予定値</p></article>
+            <article class="rule-card current-setting"><strong id="current-daily-limit">0.75%</strong><span>1日の新規買い停止線</span><p>到達後は新しい買い判断を停止</p></article>
+            <article class="rule-card current-setting"><strong id="current-weekly-limit">2.00%</strong><span>1週間の新規買い停止線</span><p>到達後は新しい買い判断を停止</p></article>
+            <article class="rule-card current-setting"><strong id="current-investment-limit">未設定</strong><span>最大投資額</span><p>未設定なら新規買いをブロック</p></article>
+          </div>
+          <div class="warning-callout" role="note"><strong>損失額を保証する上限ではありません</strong><p>予定損失と日次・週次の停止線は、数量計算と新規買いを止めるための基準です。窓開け、スリッページ、手数料、通信・市場障害により、実際の損失は設定値を超えることがあります。保有中の売り（退出）はこれらの停止線で妨げません。</p></div>
+        </article>
+
+        <article class="panel risk-editor-panel">
+          <div class="panel-title"><div><p class="eyebrow">次回セッションから変更</p><h3>安全設定を保存</h3></div><span class="pill pill-safe">当日変更なし</span></div>
+          <p id="risk-settings-readonly" class="availability-note">現在は表示専用です。保存先を明示してダッシュボードを起動した場合だけ変更できます。</p>
+          <form id="risk-settings-form" class="risk-settings-form" novalidate>
+            <label>適用する対象日<input id="risk-target-session" name="target_session" type="date" autocomplete="off" disabled required><small>保存時は日付として扱います。運用時は取引所カレンダーの営業日との完全一致が必要です</small></label>
+            <label>1回の予定損失（%）<input id="risk-planned-percent" name="planned_risk_percent" type="number" inputmode="decimal" min="0.01" max="1.00" step="0.01" value="0.25" disabled required><small>現在の推奨 0.25% / 最大 1%</small></label>
+            <label>1日の新規買い停止線（%）<input id="risk-daily-percent" name="daily_loss_percent" type="number" inputmode="decimal" min="0.01" max="2.00" step="0.01" value="0.75" disabled required><small>現在の推奨 0.75% / 最大 2%</small></label>
+            <label>1週間の新規買い停止線（%）<input id="risk-weekly-percent" name="weekly_loss_percent" type="number" inputmode="decimal" min="0.01" max="5.00" step="0.01" value="2.00" disabled required><small>現在の推奨 2% / 最大 5%</small></label>
+            <label>最大投資額（米ドル）<input id="risk-investment-dollars" name="maximum_investment_dollars" type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="例: 500.00" disabled><small>買い代金 + 買い手数料の合計。空欄なら新規買いを停止</small></label>
+            <div class="form-actions"><button id="save-risk-settings" class="button button-primary" type="submit" disabled>次回用として保存</button></div>
+          </form>
+          <p class="field-help">保存しても注文機能は有効になりません。現在のセッションには適用せず、過去・当日の設定を上方向へ変更できません。</p>
+        </article>
+
+        <div class="section-heading compact-heading"><div><p class="eyebrow">変更できる絶対上限</p><h3>推奨値とは別の安全天井</h3></div></div>
+        <div class="rule-grid allowed-maxima">
+          <article class="rule-card"><strong>最大 1%</strong><span>1回の予定損失</span><p>推奨値は0.25%</p></article>
+          <article class="rule-card"><strong>最大 2%</strong><span>1日の新規買い停止線</span><p>推奨値は0.75%</p></article>
+          <article class="rule-card"><strong>最大 5%</strong><span>1週間の新規買い停止線</span><p>推奨値は2%</p></article>
+          <article class="rule-card"><strong>1往復</strong><span>1日の回数</span><p>買いと売りを1組まで（変更不可）</p></article>
         </div>
         <div class="section-heading compact-heading"><div><p class="eyebrow">現在の確認結果</p><h3>安全チェック</h3></div></div>
         <div id="risk-cards" class="metric-grid"></div>

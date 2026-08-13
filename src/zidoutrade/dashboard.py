@@ -1,8 +1,9 @@
-"""Loopback-only dashboard for candidate review and next-session selection.
+"""Loopback-only dashboard for candidate review and safe policy settings.
 
-The dashboard has no broker account or order API.  Its sole mutation is a
-user's next-session candidate choice, delegated to a caller-supplied callback.
-Security checks are intentionally performed before a request body is parsed.
+The dashboard has no broker account or order API.  Its mutations are limited
+to a user's next-session candidate choice and, when an explicit external store
+is supplied, next-session risk settings.  Security checks are intentionally
+performed before a request body is parsed.
 """
 
 from __future__ import annotations
@@ -23,6 +24,14 @@ from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 from .candidates import CandidateBatch, InstrumentKind, normalize_us_symbol
+from .risk_settings import (
+    MAX_SAFE_CENTS,
+    RiskSettingsConflictError,
+    RiskSettingsError,
+    RiskSettingsUpdate,
+    default_public_risk_settings,
+    parse_risk_settings_update,
+)
 from .selection import SelectionError, SelectionRecord, SelectionState, record_from_payload
 
 
@@ -35,6 +44,7 @@ _PUBLIC_STATE_FIELDS = {
     "selection",
     "decision",
     "risk",
+    "risk_settings",
     "journal",
     "system",
     "strategy_explanation",
@@ -93,6 +103,7 @@ _HASH_VALUE_PATHS = {
     ("record_sha256",),
     ("selection", "sha256"),
     ("selection", "record", "parent_sha256"),
+    ("risk_settings", "sha256"),
 }
 _SELECTION_STATES = frozenset(item.value for item in SelectionState)
 _INSTRUMENT_KINDS = frozenset(item.value for item in InstrumentKind)
@@ -130,6 +141,20 @@ _SECTION_FIELDS = {
         "sensitive_data_exposed",
     },
 }
+_RISK_SETTINGS_FIELDS = {
+    "application_scope",
+    "daily_loss_limit_basis_points",
+    "editable",
+    "entry_blocked",
+    "maximum_investment_cents",
+    "planned_risk_basis_points",
+    "revision",
+    "risk_policy_version",
+    "saved",
+    "sha256",
+    "target_session",
+    "weekly_loss_limit_basis_points",
+}
 _SAFE_OVERVIEW_MESSAGES = {"No local runtime snapshot is attached."}
 _STRATEGY_EXPLANATION = {
     "indicator": "Wilder RSI(14)",
@@ -138,6 +163,9 @@ _STRATEGY_EXPLANATION = {
         "RSI <= 30 occurred within the previous 3 completed bars",
         "previous RSI <= 35 and current RSI > 35",
         "current close > previous completed-bar high",
+        "signal volume >= 1.5 times the previous 13-bar median",
+        "fresh quote spread <= 0.10%",
+        "breakout chase distance <= 0.50% above the previous high",
         "decision window 10:00-15:15 America/New_York",
     ],
     "exit": [
@@ -177,7 +205,13 @@ def _assert_public_string(value: str, path: Tuple[object, ...]) -> None:
 def _assert_typed_public_leaf(key: Optional[str], value: Any) -> None:
     """Apply narrow types to security-relevant, machine-readable fields."""
 
-    if key in {"eligible", "saved", "trade_permitted"} and type(value) is not bool:
+    if key in {
+        "editable",
+        "eligible",
+        "entry_blocked",
+        "saved",
+        "trade_permitted",
+    } and type(value) is not bool:
         raise ValueError("INVALID_PUBLIC_BOOLEAN")
     if key in {"priority", "revision"} and (
         type(value) is not int or value < 0
@@ -205,6 +239,65 @@ def _assert_typed_public_leaf(key: Optional[str], value: Any) -> None:
         raise ValueError("INVALID_PUBLIC_CANDIDATE_STATUS")
     if key == "instrument_kind" and value not in _INSTRUMENT_KINDS:
         raise ValueError("INVALID_PUBLIC_INSTRUMENT_KIND")
+
+
+def _assert_risk_settings_schema(settings: Any) -> None:
+    if type(settings) is not dict or set(settings) != _RISK_SETTINGS_FIELDS:
+        raise ValueError("INVALID_PUBLIC_RISK_SETTINGS")
+    exact_integers = {
+        "planned_risk_basis_points": (1, 100),
+        "daily_loss_limit_basis_points": (1, 200),
+        "weekly_loss_limit_basis_points": (1, 500),
+        "revision": (0, None),
+    }
+    for name, (minimum, maximum) in exact_integers.items():
+        value = settings[name]
+        if type(value) is not int or value < minimum or (
+            maximum is not None and value > maximum
+        ):
+            raise ValueError("INVALID_PUBLIC_RISK_SETTINGS")
+    if not (
+        settings["planned_risk_basis_points"]
+        <= settings["daily_loss_limit_basis_points"]
+        <= settings["weekly_loss_limit_basis_points"]
+    ):
+        raise ValueError("INVALID_PUBLIC_RISK_SETTINGS")
+    maximum_investment = settings["maximum_investment_cents"]
+    if maximum_investment is not None and (
+        type(maximum_investment) is not int
+        or maximum_investment <= 0
+        or maximum_investment > MAX_SAFE_CENTS
+    ):
+        raise ValueError("INVALID_PUBLIC_RISK_SETTINGS")
+    if settings["risk_policy_version"] != "RSI_RISK_POLICY_V2":
+        raise ValueError("INVALID_PUBLIC_RISK_SETTINGS")
+    if settings["application_scope"] != "NEXT_SESSION_ONLY":
+        raise ValueError("INVALID_PUBLIC_RISK_SETTINGS")
+    if type(settings["editable"]) is not bool or type(settings["saved"]) is not bool:
+        raise ValueError("INVALID_PUBLIC_RISK_SETTINGS")
+    if type(settings["entry_blocked"]) is not bool or settings["entry_blocked"] != (
+        maximum_investment is None
+    ):
+        raise ValueError("INVALID_PUBLIC_RISK_SETTINGS")
+    target = settings["target_session"]
+    if target is not None:
+        if type(target) is not str:
+            raise ValueError("INVALID_PUBLIC_RISK_SETTINGS")
+        try:
+            parsed = date.fromisoformat(target)
+        except ValueError as exc:
+            raise ValueError("INVALID_PUBLIC_RISK_SETTINGS") from exc
+        if parsed.isoformat() != target:
+            raise ValueError("INVALID_PUBLIC_RISK_SETTINGS")
+    digest = settings["sha256"]
+    if digest is not None and (
+        type(digest) is not str or _LOWER_SHA256.fullmatch(digest) is None
+    ):
+        raise ValueError("INVALID_PUBLIC_RISK_SETTINGS")
+    if settings["saved"] != (settings["revision"] > 0):
+        raise ValueError("INVALID_PUBLIC_RISK_SETTINGS")
+    if settings["saved"] != (digest is not None and target is not None):
+        raise ValueError("INVALID_PUBLIC_RISK_SETTINGS")
 
 
 def _assert_candidate_schema(candidate: Any) -> None:
@@ -265,6 +358,7 @@ def _assert_public_state_shape(value: Mapping[str, Any]) -> None:
     if "strategy_explanation" in value:
         if value["strategy_explanation"] != _STRATEGY_EXPLANATION:
             raise ValueError("DASHBOARD_STATE_SCHEMA_MISMATCH")
+    _assert_risk_settings_schema(value["risk_settings"])
 
     overview = value["overview"]
     if "message" in overview and overview["message"] not in _SAFE_OVERVIEW_MESSAGES:
@@ -404,6 +498,10 @@ def _assert_public_redacted(
     if value is None or type(value) is bool:
         return
     if type(value) is int:
+        if _path == ("risk_settings", "maximum_investment_cents"):
+            if value <= 0:
+                raise ValueError("INVALID_PUBLIC_RISK_SETTINGS")
+            return
         if len(str(abs(value))) >= 6:
             raise ValueError("SENSITIVE_PUBLIC_STATE_VALUE")
         return
@@ -455,12 +553,20 @@ class DashboardApplication:
         validation_callback: Optional[Callable[[str], Mapping[str, Any]]] = None,
         arming_callback: Optional[Callable[[str, str], Mapping[str, Any]]] = None,
         *,
+        risk_settings_provider: Optional[Callable[[], Mapping[str, Any]]] = None,
+        risk_settings_callback: Optional[
+            Callable[[RiskSettingsUpdate], Mapping[str, Any]]
+        ] = None,
         csrf_token: Optional[str] = None,
     ) -> None:
         self.state_provider = state_provider
         self.selection_callback = selection_callback
         self.validation_callback = validation_callback
         self.arming_callback = arming_callback
+        self.risk_settings_provider = risk_settings_provider
+        self.risk_settings_callback = risk_settings_callback
+        if risk_settings_callback is not None and risk_settings_provider is None:
+            raise ValueError("RISK_SETTINGS_PROVIDER_REQUIRED_FOR_MUTATION")
         self.csrf_token = csrf_token or secrets.token_urlsafe(32)
         if len(self.csrf_token) < 32:
             raise ValueError("CSRF_TOKEN_TOO_SHORT")
@@ -484,6 +590,17 @@ class DashboardApplication:
         if not isinstance(value, Mapping):
             raise TypeError("dashboard state provider must return a mapping")
         result = dict(value)
+        if self.risk_settings_provider is None:
+            risk_settings = default_public_risk_settings(editable=False)
+        else:
+            provided = self.risk_settings_provider()
+            if not isinstance(provided, Mapping):
+                raise TypeError("risk settings provider must return a mapping")
+            risk_settings = dict(provided)
+            # Editability is authority, not display data.  A provider cannot
+            # make a form writable without the narrow mutation callback.
+            risk_settings["editable"] = self.risk_settings_callback is not None
+        result["risk_settings"] = risk_settings
         if not _PUBLIC_STATE_REQUIRED.issubset(result) or not set(result).issubset(
             _PUBLIC_STATE_FIELDS
         ):
@@ -656,6 +773,7 @@ def _handler_class(application: DashboardApplication) -> type:
                 "/api/selection",
                 "/api/selection/validate",
                 "/api/selection/arm",
+                "/api/risk-settings",
             }:
                 self._error(HTTPStatus.NOT_FOUND, "NOT_FOUND")
                 return
@@ -689,6 +807,29 @@ def _handler_class(application: DashboardApplication) -> type:
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
                 self._error(HTTPStatus.BAD_REQUEST, "INVALID_JSON")
                 return
+            if request_path == "/api/risk-settings":
+                try:
+                    update = parse_risk_settings_update(payload)
+                except RiskSettingsError:
+                    self._error(HTTPStatus.UNPROCESSABLE_ENTITY, "INVALID_RISK_SETTINGS")
+                    return
+                if application.risk_settings_callback is None:
+                    self._error(HTTPStatus.SERVICE_UNAVAILABLE, "RISK_SETTINGS_READ_ONLY")
+                    return
+                try:
+                    result = application.risk_settings_callback(update)
+                    if not isinstance(result, Mapping):
+                        raise TypeError("risk settings callback must return a mapping")
+                except RiskSettingsConflictError:
+                    self._error(HTTPStatus.CONFLICT, "RISK_SETTINGS_CONFLICT")
+                    return
+                except RiskSettingsError:
+                    self._error(HTTPStatus.UNPROCESSABLE_ENTITY, "INVALID_RISK_SETTINGS")
+                    return
+                except Exception:
+                    self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "RISK_SETTINGS_UPDATE_FAILED")
+                    return
+                return self._send_risk_settings_result(result)
             if request_path == "/api/selection/validate":
                 if set(payload) != {"expected_sha256"} or self._single_header("X-Confirm-Action") is not None:
                     self._error(HTTPStatus.BAD_REQUEST, "INVALID_VALIDATION_SCHEMA")
@@ -801,6 +942,40 @@ def _handler_class(application: DashboardApplication) -> type:
             # details.  The server emits its own fixed message and never
             # publishes either value.
             public_result["message"] = "Selection revision saved."
+            try:
+                _assert_public_redacted(public_result)
+            except ValueError:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "INVALID_CALLBACK_RESPONSE")
+                return
+            self._json(HTTPStatus.OK, public_result)
+
+        def _send_risk_settings_result(self, result: Mapping[str, Any]) -> None:
+            value = dict(result)
+            if set(value) != {"revision", "saved", "target_session"}:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "INVALID_CALLBACK_RESPONSE")
+                return
+            if (
+                value["saved"] is not True
+                or type(value["revision"]) is not int
+                or value["revision"] < 1
+                or type(value["target_session"]) is not str
+            ):
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "INVALID_CALLBACK_RESPONSE")
+                return
+            try:
+                target = date.fromisoformat(value["target_session"])
+            except ValueError:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "INVALID_CALLBACK_RESPONSE")
+                return
+            if target.isoformat() != value["target_session"]:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "INVALID_CALLBACK_RESPONSE")
+                return
+            public_result = {
+                "message": "Risk settings revision saved for a future session.",
+                "revision": value["revision"],
+                "saved": True,
+                "target_session": value["target_session"],
+            }
             try:
                 _assert_public_redacted(public_result)
             except ValueError:
