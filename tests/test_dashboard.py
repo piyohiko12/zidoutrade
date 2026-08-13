@@ -196,6 +196,11 @@ class DashboardTests(unittest.TestCase):
             "損失額を保証する上限ではありません",
             "買い代金 + 買い手数料",
             "保存しても注文機能は有効になりません",
+            "Q013研究候補：ATR比0.50%以下",
+            "ATR ÷ 終値",
+            "本番未採用",
+            "本番未採用・注文は0件です",
+            "記録機能を未接続",
         ):
             self.assertIn(wording, html)
         self.assertIn("Content-Security-Policy", headers)

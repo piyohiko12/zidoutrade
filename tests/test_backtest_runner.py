@@ -3,6 +3,7 @@ from unittest.mock import patch
 import unittest
 from zoneinfo import ZoneInfo
 
+from zidoutrade.backtest import BacktestVariant
 from zidoutrade.backtest_io import BacktestInputBundle, HistoricalBar, HistoricalSession
 from zidoutrade.backtest_runner import prepare_daily_trends, run_attested_backtest
 from zidoutrade.risk import RiskPolicy
@@ -109,6 +110,39 @@ class BacktestRunnerTests(unittest.TestCase):
         self.assertEqual(call.kwargs["qfq_bars"][0].symbol, "US.AAPL")
         self.assertEqual(call.kwargs["sessions"][0].session_date, TARGET)
         self.assertIs(call.kwargs["config"].risk_policy, policy)
+        self.assertIs(
+            call.kwargs["config"].strategy_variant,
+            BacktestVariant.BASELINE,
+        )
+
+    def test_adapter_propagates_fixed_variant_by_keyword_only(self):
+        bundle = _bundle()
+        sentinel = object()
+        policy = RiskPolicy(maximum_investment_cents=1_000_000)
+        with patch(
+            "zidoutrade.backtest_runner.run_candle_backtest", return_value=sentinel
+        ) as engine:
+            result = run_attested_backtest(
+                bundle,
+                initial_equity=100_000.0,
+                risk_policy=policy,
+                strategy_variant=BacktestVariant.Q013_ATR_CAP_0050_SHADOW,
+            )
+
+        self.assertIs(result, sentinel)
+        self.assertIs(
+            engine.call_args.kwargs["config"].strategy_variant,
+            BacktestVariant.Q013_ATR_CAP_0050_SHADOW,
+        )
+
+    def test_adapter_rejects_untyped_variant(self):
+        with self.assertRaisesRegex(TypeError, "exact BacktestVariant"):
+            run_attested_backtest(
+                _bundle(),
+                initial_equity=100_000.0,
+                risk_policy=RiskPolicy(maximum_investment_cents=1_000_000),
+                strategy_variant="RSI_AUTOPILOT_V1_Q013_ATR_CAP_0050_SHADOW",
+            )
 
 
 if __name__ == "__main__":

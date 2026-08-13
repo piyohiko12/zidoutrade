@@ -204,6 +204,25 @@ moomooAIの回答は検証候補であり、収益性、勝率、損失上限の
 - [moomoo Japan 米国株・ETF手数料](https://www.moomoo.com/jp/support/topic7_184)
 - [moomoo Japan 料金一覧](https://www.moomoo.com/jp/pricing)
 
+### 5.3 moomooAI Q013バックテスト後見直しの扱い
+
+2026-08-14のQ013では、口座等を除いたowner-only固定レポートの集計をmoomooAIへ渡しました。数値、結果の
+方向、取引内訳は公開リポジトリへ保存しません。回答には複数条件の同時変更と、bar count等を損益や取引数に
+誤読したperformance表が含まれたため、performance主張と複合変更は採用しません。
+
+先読みなしで原子的に比較できる最初の候補だけを、research-only ID
+`RSI_AUTOPILOT_V1_Q013_ATR_CAP_0050_SHADOW`として固定します。最新の確定済みQFQ・RTH 15分足に対する
+Wilder ATR(14)を同じ足のcloseで割り、有限かつ正で`latest_atr_qfq / latest_close_qfq <= 0.0050`
+の場合だけ研究gateを`PASS`とします。exact境界は含みます。必要本数不足、欠損、非有限値、0以下、または
+上限超過はすべて`WAIT`です。
+
+これは将来の注文0 paired shadow候補に限定します。現releaseでは探索的backtest variantと説明表示だけが
+実装済みで、prospective recorderは未接続です。現行V1、production判断、Q012条件、risk sizing、退出条件、
+runner/broker双方の注文hard stopは変更しません。同じ履歴を見た後の再利用結果は
+`IN_SAMPLE_POST_HOC`かつ`EXPLORATORY_ONLY`であり、採用判断には使いません。事前固定した将来データで
+controlとpaired比較し、さらに独立した再現確認が終わるまで`RESEARCH_ONLY`です。質問のサニタイズ要約と
+誤読の扱いは[Q013見直し記録](research/MOOMOO_AI_Q013_REVIEW_JA.md)に保存します。
+
 ## 6. 目標状態機械と停止
 
 controlとexposureを分けます。

@@ -225,6 +225,9 @@ button:focus-visible, input:focus-visible, a:focus-visible, summary:focus-visibl
 .q012-grid strong { color: #c9f7e4; font-size: 13px; }
 .q012-grid p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
 .q012-panel .field-help { padding: 16px 0 0; }
+.q013-panel { margin: 15px 0; border-color: #594a28; }
+.q013-panel > p { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+.q013-panel .warning-callout { margin-top: 0; }
 
 .rule-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; margin-bottom: 28px; }
 .rule-card { display: grid; gap: 3px; min-height: 150px; padding: 22px; border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--panel); }

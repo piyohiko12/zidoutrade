@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from enum import Enum
 from statistics import median
 import math
 from typing import Dict, Optional, Sequence, Tuple
@@ -45,6 +46,14 @@ from .strategy import (
 
 MODEL_ID = "HISTORICAL_CANDLE_PROXY_V1"
 RESULT_STATUS = "EXPLORATORY_ONLY"
+Q013_ATR_CLOSE_CAP = 0.0050
+
+
+class BacktestVariant(str, Enum):
+    """Closed set of immutable strategy variants supported by the proxy."""
+
+    BASELINE = "RSI_AUTOPILOT_V1"
+    Q013_ATR_CAP_0050_SHADOW = "RSI_AUTOPILOT_V1_Q013_ATR_CAP_0050_SHADOW"
 
 
 @dataclass(frozen=True)
@@ -88,6 +97,7 @@ class BacktestConfig:
     normal_exit_cushion_bps: float = 15.0
     stressed_exit_cushion_bps: float = 50.0
     model_id: str = MODEL_ID
+    strategy_variant: BacktestVariant = BacktestVariant.BASELINE
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "symbol", require_symbol("symbol", self.symbol))
@@ -102,6 +112,8 @@ class BacktestConfig:
             raise ValueError("backtest risk_policy requires maximum_investment_cents")
         if self.model_id != MODEL_ID:
             raise ValueError("unsupported backtest model_id")
+        if type(self.strategy_variant) is not BacktestVariant:
+            raise TypeError("strategy_variant must be an exact BacktestVariant")
         frozen = {
             "assumed_spread_bps": 10.0,
             "entry_cushion_bps": 10.0,
@@ -124,6 +136,7 @@ class BacktestConfig:
             "normal_exit_cushion_bps": self.normal_exit_cushion_bps,
             "stressed_exit_cushion_bps": self.stressed_exit_cushion_bps,
             "model_id": self.model_id,
+            "strategy_variant_id": self.strategy_variant.value,
         }
 
 
@@ -217,6 +230,7 @@ class BacktestTrade:
 class BacktestReport:
     model_id: str
     status: str
+    strategy_variant_id: str
     symbol: str
     first_session: date
     last_session: date
@@ -246,6 +260,11 @@ class BacktestReport:
     def __post_init__(self) -> None:
         if self.model_id != MODEL_ID or self.status != RESULT_STATUS:
             raise ValueError("backtest report classification is not exact")
+        if (
+            type(self.strategy_variant_id) is not str
+            or self.strategy_variant_id != self.config.strategy_variant.value
+        ):
+            raise ValueError("report strategy_variant_id does not match config")
         object.__setattr__(self, "symbol", require_symbol("symbol", self.symbol))
         if type(self.first_session) is not date or type(self.last_session) is not date:
             raise TypeError("report sessions must be exact dates")
@@ -323,6 +342,7 @@ class BacktestReport:
         return {
             "model_id": self.model_id,
             "status": self.status,
+            "strategy_variant_id": self.strategy_variant_id,
             "symbol": self.symbol,
             "first_session": self.first_session.isoformat(),
             "last_session": self.last_session.isoformat(),
@@ -421,6 +441,35 @@ def _entry_signal(
     return (latest.close - prior_high) / prior_high <= MAX_BREAKOUT_EXTENSION
 
 
+def _variant_allows_entry(
+    index: int,
+    bars: Tuple[CompletedBar15m, ...],
+    atr: Tuple[Optional[float], ...],
+    variant: BacktestVariant,
+) -> bool:
+    """Apply a fixed post-signal gate using only the latest completed bar."""
+
+    if type(variant) is not BacktestVariant:
+        raise TypeError("variant must be an exact BacktestVariant")
+    if variant is BacktestVariant.BASELINE:
+        return True
+    if variant is not BacktestVariant.Q013_ATR_CAP_0050_SHADOW:
+        raise ValueError("unsupported backtest strategy variant")
+    if index < 0 or index >= len(bars) or index >= len(atr):
+        return False
+    latest_close = bars[index].close
+    latest_atr = atr[index]
+    if (
+        latest_atr is None
+        or not math.isfinite(latest_atr)
+        or latest_atr <= 0.0
+        or not math.isfinite(latest_close)
+        or latest_close <= 0.0
+    ):
+        return False
+    return latest_atr / latest_close <= Q013_ATR_CLOSE_CAP
+
+
 def _exit_reason(
     raw_bar: CompletedBar15m,
     current_rsi: Optional[float],
@@ -506,6 +555,11 @@ def run_candle_backtest(
 
         if session_date in traded_dates or not _entry_signal(
             index, qfq, rsi_values, trends.get(session_date)
+        ):
+            index += 1
+            continue
+        if not _variant_allows_entry(
+            index, qfq, atr_values, config.strategy_variant
         ):
             index += 1
             continue
@@ -643,6 +697,7 @@ def run_candle_backtest(
     return BacktestReport(
         model_id=MODEL_ID,
         status=RESULT_STATUS,
+        strategy_variant_id=config.strategy_variant.value,
         symbol=config.symbol,
         first_session=qfq[0].session_date,
         last_session=qfq[-1].session_date,
@@ -691,8 +746,10 @@ __all__ = [
     "BacktestConfig",
     "BacktestReport",
     "BacktestTrade",
+    "BacktestVariant",
     "DatedTrend",
     "MODEL_ID",
+    "Q013_ATR_CLOSE_CAP",
     "RESULT_STATUS",
     "SessionBoundary",
     "run_candle_backtest",

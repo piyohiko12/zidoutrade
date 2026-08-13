@@ -15,6 +15,7 @@ from typing import Dict, Tuple
 from .backtest import (
     BacktestConfig,
     BacktestReport,
+    BacktestVariant,
     DatedTrend,
     SessionBoundary,
     run_candle_backtest,
@@ -134,6 +135,7 @@ def run_attested_backtest(
     *,
     initial_equity: float,
     risk_policy: RiskPolicy,
+    strategy_variant: BacktestVariant = BacktestVariant.BASELINE,
 ) -> BacktestReport:
     """Run the pure candle proxy over one fully-attested input bundle."""
 
@@ -141,6 +143,8 @@ def run_attested_backtest(
         raise TypeError("bundle must be an exact BacktestInputBundle")
     if type(risk_policy) is not RiskPolicy:
         raise TypeError("risk_policy must be an exact RiskPolicy")
+    if type(strategy_variant) is not BacktestVariant:
+        raise TypeError("strategy_variant must be an exact BacktestVariant")
     sessions = tuple(
         SessionBoundary(item.session_date, item.close_at)
         for item in bundle.sessions
@@ -150,6 +154,7 @@ def run_attested_backtest(
         symbol=bundle.symbol,
         initial_equity=initial_equity,
         risk_policy=risk_policy,
+        strategy_variant=strategy_variant,
     )
     return run_candle_backtest(
         qfq_bars=_completed_bars(bundle, bundle.intraday_qfq),

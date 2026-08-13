@@ -6,10 +6,13 @@ from zoneinfo import ZoneInfo
 
 from zidoutrade.backtest import (
     BacktestConfig,
+    BacktestVariant,
     DatedTrend,
     MODEL_ID,
+    Q013_ATR_CLOSE_CAP,
     RESULT_STATUS,
     SessionBoundary,
+    _variant_allows_entry,
     run_candle_backtest,
 )
 from zidoutrade.models import CompletedBar15m, ReasonCode, TrendEligibility
@@ -82,6 +85,109 @@ def config(**changes):
 
 
 class CandleBacktestTests(unittest.TestCase):
+    def test_default_variant_equals_explicit_baseline_and_is_reported(self):
+        bars = synthetic_bars()
+        implicit = run_candle_backtest(bars, bars, trends(), sessions(), config())
+        explicit = run_candle_backtest(
+            bars,
+            bars,
+            trends(),
+            sessions(),
+            config(strategy_variant=BacktestVariant.BASELINE),
+        )
+
+        self.assertEqual(implicit.to_dict(), explicit.to_dict())
+        self.assertEqual(
+            implicit.strategy_variant_id,
+            BacktestVariant.BASELINE.value,
+        )
+        self.assertEqual(
+            implicit.to_dict()["config"]["strategy_variant_id"],
+            BacktestVariant.BASELINE.value,
+        )
+
+    def test_variant_rejects_strings_instead_of_coercing_them(self):
+        with self.assertRaisesRegex(TypeError, "exact BacktestVariant"):
+            config(
+                strategy_variant="RSI_AUTOPILOT_V1_Q013_ATR_CAP_0050_SHADOW"
+            )
+
+    def test_q013_atr_cap_includes_boundary_and_fails_closed(self):
+        bars = synthetic_bars()
+        index = len(bars) - 1
+        close = bars[index].close
+        prefix = (None,) * index
+
+        self.assertTrue(
+            _variant_allows_entry(
+                index,
+                bars,
+                prefix + (close * Q013_ATR_CLOSE_CAP,),
+                BacktestVariant.Q013_ATR_CAP_0050_SHADOW,
+            )
+        )
+        self.assertFalse(
+            _variant_allows_entry(
+                index,
+                bars,
+                prefix + (close * Q013_ATR_CLOSE_CAP + 1e-12,),
+                BacktestVariant.Q013_ATR_CAP_0050_SHADOW,
+            )
+        )
+        for blocked in (None, 0.0, float("nan"), float("inf")):
+            self.assertFalse(
+                _variant_allows_entry(
+                    index,
+                    bars,
+                    prefix + (blocked,),
+                    BacktestVariant.Q013_ATR_CAP_0050_SHADOW,
+                )
+            )
+
+    def test_q013_variant_only_removes_baseline_candidates(self):
+        bars = synthetic_bars()
+        baseline = set(range(len(bars)))
+        atr = tuple(
+            bar.close * (Q013_ATR_CLOSE_CAP if index % 2 else 0.0060)
+            for index, bar in enumerate(bars)
+        )
+        accepted = {
+            index
+            for index in baseline
+            if _variant_allows_entry(
+                index,
+                bars,
+                atr,
+                BacktestVariant.Q013_ATR_CAP_0050_SHADOW,
+            )
+        }
+
+        self.assertTrue(accepted)
+        self.assertLess(len(accepted), len(baseline))
+        self.assertLessEqual(accepted, baseline)
+
+    def test_q013_gate_is_independent_of_future_bars_and_atr_values(self):
+        bars = synthetic_bars()
+        index = len(bars) - 3
+        allowed_atr = bars[index].close * Q013_ATR_CLOSE_CAP
+        first = (None,) * index + (allowed_atr, 999.0, 999.0)
+        second = (None,) * index + (allowed_atr, 0.0, 0.0)
+
+        self.assertEqual(
+            _variant_allows_entry(
+                index,
+                bars,
+                first,
+                BacktestVariant.Q013_ATR_CAP_0050_SHADOW,
+            ),
+            _variant_allows_entry(
+                index,
+                bars,
+                second,
+                BacktestVariant.Q013_ATR_CAP_0050_SHADOW,
+            ),
+        )
+
     def test_signal_enters_no_earlier_than_next_raw_bar_and_reports_costs(self):
         bars = synthetic_bars()
         result = run_candle_backtest(bars, bars, trends(), sessions(), config())
