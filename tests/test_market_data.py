@@ -572,7 +572,7 @@ class QuoteAdapterTests(unittest.TestCase):
         rows = [
             {
                 "code": "US.ABC",
-                "time_key": "2026-08-11 09:30:00",
+                "time_key": "2026-08-11 09:45:00",
                 "open": 100.0,
                 "high": 101.0,
                 "low": 99.0,
@@ -581,7 +581,7 @@ class QuoteAdapterTests(unittest.TestCase):
             },
             {
                 "code": "US.ABC",
-                "time_key": "2026-08-11 09:45:00",
+                "time_key": "2026-08-11 10:00:00",
                 "open": 100.5,
                 "high": 101.5,
                 "low": 100.0,
@@ -603,12 +603,98 @@ class QuoteAdapterTests(unittest.TestCase):
             adjustment_scale=adjustment_scale(self.calendar),
         )
         self.assertEqual(len(history.bars), 2)
+        self.assertEqual(
+            history.bars[0].start,
+            datetime(2026, 8, 11, 9, 30, tzinfo=NY),
+        )
+        self.assertEqual(
+            history.bars[0].end,
+            datetime(2026, 8, 11, 9, 45, tzinfo=NY),
+        )
         self.assertIs(history.scale, PriceScale.QFQ)
         self.assertEqual(sdk.open_calls, [("127.0.0.1", 11111)])
         self.assertTrue(context.closed)
         self.assertFalse(context.history_calls[0][1]["extended_time"])
         self.assertEqual(context.history_calls[0][1]["session"], "RTH")
         self.assertEqual(context.history_calls[0][1]["autype"], "QFQ")
+
+    def test_provider_intraday_labels_are_bar_end_boundaries(self):
+        rows = []
+        for index in range(26):
+            bar_end = datetime(2026, 8, 11, 9, 45, tzinfo=NY) + timedelta(
+                minutes=15 * index
+            )
+            rows.append(
+                {
+                    "code": "US.ABC",
+                    "time_key": bar_end.strftime("%Y-%m-%d %H:%M:%S"),
+                    "open": 100.0 + index,
+                    "high": 101.0 + index,
+                    "low": 99.0 + index,
+                    "close": 100.5 + index,
+                    "volume": 1000.0 + index,
+                }
+            )
+        adapter = MoomooQuoteAdapter(
+            sdk_loader=lambda: FakeSDK(FakeQuoteContext(history_rows=rows))
+        )
+
+        history = adapter.completed_15m_bars(
+            symbol="US.ABC",
+            start=self.days[-1],
+            end=self.days[-1],
+            as_of=datetime(2026, 8, 11, 16, 1, tzinfo=NY),
+            calendar=self.calendar,
+            adjustment_scale=adjustment_scale(self.calendar),
+        )
+
+        self.assertEqual(
+            (history.bars[0].start, history.bars[0].end),
+            (
+                datetime(2026, 8, 11, 9, 30, tzinfo=NY),
+                datetime(2026, 8, 11, 9, 45, tzinfo=NY),
+            ),
+        )
+        self.assertEqual(
+            (history.bars[-1].start, history.bars[-1].end),
+            (
+                datetime(2026, 8, 11, 15, 45, tzinfo=NY),
+                datetime(2026, 8, 11, 16, 0, tzinfo=NY),
+            ),
+        )
+
+    def test_provider_intraday_labels_outside_rth_are_rejected(self):
+        for label, as_of in (
+            ("2026-08-11 09:30:00", datetime(2026, 8, 11, 9, 46, tzinfo=NY)),
+            ("2026-08-11 16:15:00", datetime(2026, 8, 11, 16, 16, tzinfo=NY)),
+        ):
+            with self.subTest(label=label):
+                context = FakeQuoteContext(
+                    history_rows=[
+                        {
+                            "code": "US.ABC",
+                            "time_key": label,
+                            "open": 100.0,
+                            "high": 101.0,
+                            "low": 99.0,
+                            "close": 100.5,
+                            "volume": 1000.0,
+                        }
+                    ]
+                )
+                adapter = MoomooQuoteAdapter(
+                    sdk_loader=lambda context=context: FakeSDK(context)
+                )
+                with self.assertRaises(MarketDataValidationError):
+                    adapter.completed_15m_bars(
+                        symbol="US.ABC",
+                        start=self.days[-1],
+                        end=self.days[-1],
+                        as_of=as_of,
+                        calendar=self.calendar,
+                        adjustment_scale=adjustment_scale(self.calendar),
+                    )
+                self.assertTrue(context.closed)
 
     def test_paginated_history_fails_instead_of_implicit_backfill(self):
         context = FakeQuoteContext(page_key="more")

@@ -950,22 +950,39 @@ class MoomooQuoteAdapter:
             scale=PriceScale.QFQ,
             intraday=True,
         )
-        bars = tuple(
-            CompletedBar15m(
-                symbol=code,
-                start=_parse_provider_time(row.get("time_key")),
-                end=_parse_provider_time(row.get("time_key")) + timedelta(minutes=15),
-                open=_provider_number(row.get("open"), "open"),
-                high=_provider_number(row.get("high"), "high"),
-                low=_provider_number(row.get("low"), "low"),
-                close=_provider_number(row.get("close"), "close"),
-                volume=_provider_number(row.get("volume"), "volume"),
-                complete=True,
+        bars = []
+        for row in records:
+            # OpenD labels US 15-minute history by the bar's ending boundary:
+            # 09:45 is the completed 09:30--09:45 RTH interval.
+            bar_end = _parse_provider_time(row.get("time_key"))
+            bar_start = bar_end - timedelta(minutes=15)
+            try:
+                session = calendar.session_on(bar_start.date())
+            except ValueError as exc:
+                raise MarketDataValidationError(str(exc)) from exc
+            if (
+                session is None
+                or bar_start < session.open_at
+                or bar_end > session.close_at
+            ):
+                raise MarketDataValidationError(
+                    "provider intraday timestamp is outside frozen RTH session"
+                )
+            bars.append(
+                CompletedBar15m(
+                    symbol=code,
+                    start=bar_start,
+                    end=bar_end,
+                    open=_provider_number(row.get("open"), "open"),
+                    high=_provider_number(row.get("high"), "high"),
+                    low=_provider_number(row.get("low"), "low"),
+                    close=_provider_number(row.get("close"), "close"),
+                    volume=_provider_number(row.get("volume"), "volume"),
+                    complete=True,
+                )
             )
-            for row in records
-        )
         checked = validate_completed_15m_bars(
-            bars,
+            tuple(bars),
             symbol=code,
             as_of=as_of,
             calendar=calendar,

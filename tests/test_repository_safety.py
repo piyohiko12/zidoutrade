@@ -175,6 +175,29 @@ class RepositorySafetyTests(unittest.TestCase):
             {"private/%s" % name for name in names},
         )
 
+    def test_market_history_and_backtest_results_are_gitignored(self):
+        names = (
+            "backtests/run/backtest_report.json",
+            "backtest_input_manifest.json",
+            "backtest_report_aapl.json",
+            "symbol_15m_qfq.json",
+            "symbol_15m_raw.json",
+            "symbol_daily_qfq.json",
+            "symbol_daily_raw.json",
+            "spy_daily_qfq.json",
+            "us_trading_calendar.json",
+        )
+        result = subprocess.run(
+            ["git", "check-ignore", "--stdin"],
+            cwd=ROOT,
+            input="".join("%s\n" % name for name in names),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(result.stdout.splitlines()), set(names))
+
     def test_public_tree_has_no_high_confidence_credentials_or_private_paths(self):
         patterns = {
             "private-key": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),

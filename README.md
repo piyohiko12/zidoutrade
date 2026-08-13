@@ -60,6 +60,32 @@ PYTHONPATH=src python3 -m zidoutrade --help
 PYTHONPATH=src python3 -m zidoutrade dashboard --host 127.0.0.1 --port 8765
 ```
 
+### moomoo履歴による探索的バックテスト
+
+取得済みのmoomoo OpenD quote履歴だけを読み、口座・残高・position・orderへ接続しない
+`HISTORICAL_CANDLE_PROXY_V1`を実装しています。入力はリポジトリ外のowner-onlyディレクトリに置き、
+各ファイルの役割、QFQ/RAW、RTH、期間、行数、bytes、SHA-256をcanonical manifestへ固定します。
+
+```bash
+PYTHONPATH=src python3 -B -W error -m zidoutrade backtest \
+  --manifest /absolute/private/backtest_input_manifest.json \
+  --expected-manifest-sha256 <64桁のSHA-256> \
+  --report /absolute/private/backtest_report.json \
+  --initial-equity-cents 10000000 \
+  --maximum-investment-cents 1000000
+```
+
+RSI/ATRとsignalは確定QFQ 15分足、価格・損益は同時刻のRAW足を使い、signal確定後の次足open
+より前にはentryしません。現在のpaper fee、既定0.25%予定リスク、日次0.75%・週次2%停止線、
+投資上限を反映します。損切りと他のexitが同じ足にある場合は損切りを優先します。
+
+ただし履歴K線には当時のbid/ask、実spread、注文拒否、partial/no-fill、late fillがありません。
+そのため固定spreadと不利な価格cushionを使う**ローソク足代理評価**で、結果は常に
+`EXPLORATORY_ONLY`です。ユーザー選択の有効性、実デモ約定、sealed OOS、将来利益を証明せず、
+注文不能hard stopも解除しません。また取得日時点のQFQは後日の企業行動を反映して再計算され得るため、
+当時利用可能だったpoint-in-time調整系列であることも証明しません。生の市場データとperformance reportは
+GitHubへ保存しません。
+
 ### 安全設定UI
 
 ダッシュボードは既定で**表示専用**です。表示する保守的な既定値と、ユーザーが変更できる絶対上限を

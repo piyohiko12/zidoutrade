@@ -3,6 +3,7 @@ import io
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -29,8 +30,88 @@ class CliTests(unittest.TestCase):
                 cli.main(["--help"])
         text = help_text.getvalue()
         self.assertIn("dashboard", text)
+        self.assertIn("backtest", text)
         self.assertNotIn("place-order", text)
         self.assertNotIn("activate", text)
+
+    def test_backtest_command_is_quote_file_only_and_reports_digest(self):
+        bundle = SimpleNamespace(manifest_sha256="a" * 64)
+
+        class FakeReport:
+            status = "EXPLORATORY_ONLY"
+            final_equity = 99_500.0
+            total_fees = 25.0
+            total_net_pnl = -500.0
+            trade_count = 10
+            win_rate_excluding_flat = 0.4
+            assumptions = ("Synthetic fixed assumption.",)
+
+            def to_dict(self):
+                return {"status": self.status, "trade_count": self.trade_count}
+
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            report_path = Path(directory) / "result.json"
+            with (
+                patch(
+                    "zidoutrade.backtest_io.load_backtest_input",
+                    return_value=bundle,
+                ) as load,
+                patch(
+                    "zidoutrade.backtest_runner.run_attested_backtest",
+                    return_value=FakeReport(),
+                ) as run,
+                patch(
+                    "zidoutrade.backtest_io.write_backtest_report",
+                    return_value="b" * 64,
+                ) as write,
+                redirect_stdout(output),
+            ):
+                code = cli.main(
+                    [
+                        "backtest",
+                        "--manifest",
+                        str(Path(directory) / "manifest.json"),
+                        "--expected-manifest-sha256",
+                        "a" * 64,
+                        "--report",
+                        str(report_path),
+                        "--initial-equity-cents",
+                        "1" + "0" * 7,
+                        "--maximum-investment-cents",
+                        "1" + "0" * 6,
+                    ]
+                )
+        self.assertEqual(code, 0)
+        self.assertIn('"classification": "EXPLORATORY_ONLY"', output.getvalue())
+        self.assertIn('"report_sha256": "' + "b" * 64 + '"', output.getvalue())
+        load.assert_called_once()
+        run.assert_called_once()
+        write.assert_called_once()
+
+    def test_backtest_rejects_risk_above_the_hard_ceiling_before_input_read(self):
+        error = io.StringIO()
+        with patch("zidoutrade.backtest_io.load_backtest_input") as load, redirect_stderr(error):
+            code = cli.main(
+                [
+                    "backtest",
+                    "--manifest",
+                    "/private/input.json",
+                    "--expected-manifest-sha256",
+                    "a" * 64,
+                    "--report",
+                    "/private/report.json",
+                    "--initial-equity-cents",
+                    "1" + "0" * 7,
+                    "--maximum-investment-cents",
+                    "1" + "0" * 6,
+                    "--planned-risk-bps",
+                    "101",
+                ]
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("hard limit", error.getvalue())
+        load.assert_not_called()
 
     def test_nonloopback_dashboard_fails_before_binding(self):
         error = io.StringIO()

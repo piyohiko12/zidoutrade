@@ -1,9 +1,9 @@
 """Safe local command-line entrypoint.
 
 The CLI deliberately exposes configuration validation, a redacted dashboard,
-and tests.  It does not expose an order command.  Paper activation remains a
-separate, future, locally audited workflow rather than something a public clone
-can trigger.
+and an order-free historical candle proxy.  It does not expose an order
+command.  Paper activation remains a separate, future, locally audited
+workflow rather than something a public clone can trigger.
 """
 
 from __future__ import annotations
@@ -78,6 +78,19 @@ def _parser() -> argparse.ArgumentParser:
             "without it risk settings are read-only"
         ),
     )
+
+    backtest = commands.add_parser(
+        "backtest",
+        help="run an order-free exploratory candle proxy from attested history",
+    )
+    backtest.add_argument("--manifest", type=Path, required=True)
+    backtest.add_argument("--expected-manifest-sha256", required=True)
+    backtest.add_argument("--report", type=Path, required=True)
+    backtest.add_argument("--initial-equity-cents", type=int, required=True)
+    backtest.add_argument("--maximum-investment-cents", type=int, required=True)
+    backtest.add_argument("--planned-risk-bps", type=int, default=25)
+    backtest.add_argument("--daily-loss-bps", type=int, default=75)
+    backtest.add_argument("--weekly-loss-bps", type=int, default=200)
     return parser
 
 
@@ -157,6 +170,79 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             pass
         finally:
             server.shutdown()
+        return 0
+
+    if args.command == "backtest":
+        # Imports remain local so the read-only dashboard path never loads the
+        # historical engine.  These modules contain no SDK, network, account,
+        # or order code; the manifest points only to pre-acquired quote files.
+        from .backtest_io import (
+            BacktestInputError,
+            BacktestOutputError,
+            load_backtest_input,
+            write_backtest_report,
+        )
+        from .backtest_runner import run_attested_backtest
+        from .risk import RiskPolicy
+
+        try:
+            if args.initial_equity_cents <= 0:
+                raise ValueError("initial-equity-cents must be positive")
+            policy = RiskPolicy(
+                planned_risk_basis_points=args.planned_risk_bps,
+                daily_loss_limit_basis_points=args.daily_loss_bps,
+                weekly_loss_limit_basis_points=args.weekly_loss_bps,
+                maximum_investment_cents=args.maximum_investment_cents,
+            )
+            bundle = load_backtest_input(
+                args.manifest,
+                expected_manifest_sha256=args.expected_manifest_sha256,
+            )
+            report = run_attested_backtest(
+                bundle,
+                initial_equity=args.initial_equity_cents / 100.0,
+                risk_policy=policy,
+            )
+            report_sha256 = write_backtest_report(
+                args.report,
+                report.to_dict(),
+                input_manifest_sha256=bundle.manifest_sha256,
+                assumptions=report.assumptions,
+            )
+        except (
+            BacktestInputError,
+            BacktestOutputError,
+            OverflowError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            print(
+                json.dumps(
+                    {"classification": "EXPLORATORY_ONLY", "error": str(exc), "ok": False},
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            json.dumps(
+                {
+                    "classification": report.status,
+                    "input_manifest_sha256": bundle.manifest_sha256,
+                    "ok": True,
+                    "report_path": str(args.report.absolute()),
+                    "report_sha256": report_sha256,
+                    "summary": {
+                        "final_equity": report.final_equity,
+                        "total_fees": report.total_fees,
+                        "total_net_pnl": report.total_net_pnl,
+                        "trade_count": report.trade_count,
+                        "win_rate_excluding_flat": report.win_rate_excluding_flat,
+                    },
+                },
+                sort_keys=True,
+            )
+        )
         return 0
 
     return 2

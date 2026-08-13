@@ -78,6 +78,7 @@ DRAFT → VALIDATED → ARMED_NEXT_SESSION → SESSION_LOCKED → EXPIRED
 
 - 米国RTHの終了済み15分足だけ
 - 通常日は09:30 ET開始、公式closeまでの完全な区間
+- OpenDの米国15分足`time_key`はbar終了境界として扱う（09:45は09:30--09:45）
 - 休日、短縮日、DSTは凍結済み取引所calendarとOpenD market stateの双方で確認
 - 重複、欠損、順序逆転、非有限値、未来時刻、形成中barを拒否
 - RSIとATRは同じQFQ系列、発注はraw quote
@@ -280,6 +281,32 @@ safety violation。勝率だけでは採用しません。
 
 履歴を見て候補・銘柄を選んだ場合はhistorical final OOSと呼びません。設定と選択規則をfreezeした
 後のprospective shadowを0件目から集めます。変更は新versionです。
+
+### 9.1 moomoo履歴ローソク足による探索的バックテスト
+
+`HISTORICAL_CANDLE_PROXY_V1`は、既存OpenDのquote-only
+`request_history_kline`出力を使うheadless検証です。口座、残高、position、order、約定履歴を照会せず、
+結果JSONやグラフもリポジトリ外のowner-only runtimeへ保存します。対象銘柄を履歴確認後に固定したrunは
+`FIXED_BASELINE`であり、`USER_SELECTED`やsealed OOSとは表示しません。
+
+入力は対象銘柄のRTH 15分QFQ/RAW、対象銘柄の日足QFQ/RAW、SPY日足QFQ、米国取引日・短縮日です。
+取得時の役割、adjustment、session、期間、bytes、row count、SHA-256を外部manifestで固定します。
+15分足のOpenD時刻はbar終了境界として読み、QFQ/RAWの時刻集合は完全一致を要求します。
+
+各取引日の環境条件は前取引日までの日足だけで計算し、確定したsignal barより前の足だけを参照します。
+entryはsignal確定後の次15分足openより前には置きません。RSI/ATR、出来高、breakout、1日1往復、
+短縮日close、費用は本仕様の固定条件を使います。同一15分足内の価格順序が不明な場合はstopを優先する
+悲観的な代理処理とし、結果に仮定を列挙します。
+
+履歴K線には当時のbid/ask、10bp spread、30秒/10秒以内のfull/partial/no-fill、late fill、
+OpenD freshnessや当時の候補・ユーザー選択がありません。そのため上限spreadとfull fillの保守的代理を
+明示して計算し、classificationを常に`EXPLORATORY_ONLY`とします。現在のfee scheduleを過去価格へ
+適用した比較であり、当時の実料金やmoomooデモ約定を再現したものではありません。この結果だけで条件を
+変更せず、§10のprospective shadow OOSを置き換えません。
+
+取得日時点のQFQ履歴は、後日のsplit・配当等で再計算された値を含み得て、当時利用可能だった
+point-in-time調整系列であることを証明できません。日付・足時刻に対するfuture row混入は拒否しますが、
+この企業行動調整の限界までは解消しないため、no-lookaheadの主張はrow timestampの範囲に限定します。
 
 ## 10. リリースgate
 

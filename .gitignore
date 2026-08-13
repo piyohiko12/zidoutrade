@@ -55,3 +55,10 @@ writer.lock
 *.parquet
 *.feather
 *.sqlite*
+backtests/
+backtest_input_manifest*.json
+backtest_report*.json
+symbol_15m_*.json
+symbol_daily_*.json
+spy_daily_*.json
+us_trading_calendar*.json
