@@ -250,6 +250,26 @@ analysis population、primary estimand、futility/promotionのexact式・境界�
 不変です。討論、棄却事項、manifest/event案は
 [Q014討論記録](research/MOOMOO_AI_Q014_DEBATE_JA.md)に保存します。
 
+### 5.5 moomooAI Q015費用控除後プラス原案の扱い
+
+2026-08-14のQ015では、費用控除後損益を正にすることを「同じ履歴を調整する目的」ではなく、候補を
+事前固定した後の反証可能な合格条件として定義しました。owner-only集計はgross結果とモデル費用を分離して
+確認しましたが、公開repoへ値や方向を保存しません。fee削減やRSI threshold変更だけで解決したとは扱いません。
+
+moomooAIが最初に提案したtrailing stopは、小標本、同一足内順序、大きなwinnerを切る危険、研究者自由度の
+増加を理由に棄却しました。別レビューの`Q015_PRIOR_CLOSE_NET_REWARD_RISK_GATE_V1`は、entry判断時点で既知の
+前RTH終値までのモデル化された費用控除後回復余地と、現行`1.5 ATR` stopのモデル化された費用込みstress
+lossを比較し、前者が後者以上の場合だけ研究gateを`PASS`とする原子的entry候補です。ratioは`1.0`に固定し、
+近傍探索をしません。Q013とは合成せず、RSI/Q012、exit、risk、fee、selectionを変更しません。
+
+ただし前RTH終値は実際のexit価格ではなく、到達を保証する因果的targetでもありません。そのため最終評価は
+`DRAFT_REWARD_RISK_NOTE_ONLY`であり、現releaseには未実装・未接続です。既閲覧履歴は1回のsanityと棄却に
+しか使わず、プラスでも採用証拠にしません。Q014 recorderの実装・独立監査、Q015用manifestの事前固定、
+Stage 1の150完結往復と後続Stage 2の50完結往復を終えるまでproduction条件へ加えません。正確な式、
+fee計算前の`q < 1 => WAIT`、Stageごとの同額資本reset、正規化200件合算、固定cost stress、precision gate、
+acquisition-date QFQのpoint-in-time限界を含むfail-closed条件、反証、評価条件は
+[Q015研究原案](research/MOOMOO_AI_Q015_POSITIVE_NET_DRAFT_JA.md)に保存します。
+
 ## 6. 目標状態機械と停止
 
 controlとexposureを分けます。
