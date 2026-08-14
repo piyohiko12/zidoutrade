@@ -246,8 +246,17 @@ O_EXCL activation markerを作ります。その後の時系列的に後続・�
 事前登録した最終条件を一度だけ適用します。時系列的非重複は統計的独立を保証しません。manifestには
 analysis population、primary estimand、futility/promotionのexact式・境界・欠損時動作も固定します。
 
-現releaseではこのrecorderは未実装・未接続です。Q013は`RESEARCH_ONLY`、production条件と注文hard stopは
-不変です。討論、棄却事項、manifest/event案は
+現releaseでは、別protocol IDのQ014 V2について、EXPECTED sessionとcapture window/deadline、
+session reservation、sequenceごとのO_EXCL immutable recordとretained anchor、deterministic replay、
+writer record集合とは別のclean/failure reportとsealの**構造骨格だけ**を実装しています。固定の合成structural replayは
+正常、`NO_SELECTION`、明示`SESSION_MISSING`、deadline terminal欠落、chain/fork等のfail-closedを検査します。
+明示missingは保持された有効terminal、deadline超過かつterminal無しはdataset failureです。
+
+ただしmarket-data/selection adapter、daemon、prospective収集、性能集計には未接続です。既存ledgerを
+`open()`した再起動processはquery-onlyで、writer継続機能もありません。したがってQ013は引き続き
+`RESEARCH_ONLY`、production条件と注文hard stopは不変です。実装の採用は利益改善や収集開始を意味しません。
+保証範囲は`LOCAL_CHAIN_ONLY`であり、外部時刻や同一ownerによる全local artifactの意図的置換を証明しません。
+討論、棄却事項、manifest/event案は
 [Q014討論記録](research/MOOMOO_AI_Q014_DEBATE_JA.md)に保存します。
 
 ### 5.5 moomooAI Q015費用控除後プラス原案の扱い

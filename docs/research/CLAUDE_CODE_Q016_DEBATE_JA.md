@@ -261,5 +261,8 @@ order/account/position情報はrecorderが取得も保存もしません。
 
 ## 14. 現在の状態
 
-この討論で売買条件、production、UI、注文経路は変更していません。Q014 V2 recorderもまだ未実装です。
-共同裁定は、次の実装候補を安全な観測基盤の1 PRへ限定しただけであり、収益改善や採用を意味しません。
+この討論で売買条件、production、UI、注文経路は変更していません。討論時点ではQ014 V2 recorderは
+未実装でした。後続実装では、ここで限定したschema、session reservation、sequence別immutable record、
+retained anchor、pure replay/verifier、外部report/sealの構造骨格と、固定合成structural replayだけを追加しました。
+実市場adapter、daemon、prospective収集、性能集計、再起動writer継続は未実装です。共同裁定と後続実装は、
+収益改善、研究候補の採用、注文hard stop解除を意味しません。

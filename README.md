@@ -24,6 +24,7 @@
 - durable intent、注文・position照合、at-most-once設計の検証コード（送信は停止中）
 - ローカルUI、判断理由、リスク状態、株式日記への導線
 - 注文を出さないshadow比較（選択銘柄・全候補等ウェイト・固定baseline）
+- 注文・実市場データから分離したQ014 V2研究ledgerのschema、immutable record、replay/verifier骨格
 
 システムが行うのは候補の**適格性判定**です。「上がりそうな順」には並べません。
 ユーザーの優先順、その後ticker順で表示し、選択・非選択候補と時刻を保存します。
@@ -85,6 +86,26 @@ RSI/ATRとsignalは確定QFQ 15分足、価格・損益は同時刻のRAW足を�
 注文不能hard stopも解除しません。また取得日時点のQFQは後日の企業行動を反映して再計算され得るため、
 当時利用可能だったpoint-in-time調整系列であることも証明しません。生の市場データとperformance reportは
 GitHubへ保存しません。
+
+### Q014 V2研究ledgerの構造リプレイ
+
+将来のpaired shadowを後から都合よく書き換えないため、EXPECTED session、観測開始時刻とdeadline、
+sessionごとのreservation、sequenceごとのO_EXCL recordとretained anchor、deterministic replay、
+writer record集合とは別のclean/failure reportとsealの骨格を実装しています。明示的な`SESSION_MISSING`は
+欠損を隠さない有効terminal、
+deadline後もterminalが無い場合やchain不整合はdataset failureです。
+
+次の固定スクリプトは合成データだけで正常・NO_SELECTION・明示missing・故障注入を再生します。
+
+```bash
+PYTHONPATH=src /usr/bin/python3 -B -W error scripts/run_q014_v2_structural_replay.py
+```
+
+これは`STRUCTURAL_REPLAY_ONLY`であり、戦略の収益バックテスト、OOS、性能改善の証拠ではありません。
+ledgerはbroker、runner、SDK、market-data adapterをimportせず、口座・position・orderを取得しません。
+既存ledgerを`open()`したprocessは安全のためquery-onlyとなるため、再起動後も収集を継続するoperational
+collectorやprospective adapterはまだ未実装です。保証範囲は`LOCAL_CHAIN_ONLY`で、外部時刻や同一ownerによる
+全local artifactの意図的置換を証明しません。注文不能hard stopを解除する理由にもなりません。
 
 ### 安全設定UI
 
