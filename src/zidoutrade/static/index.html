@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>ZidouTrade — やさしいRSI分析</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar" aria-label="ツール">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">ZT</span>
+        <div>
+          <strong>ZidouTrade</strong>
+          <small>初心者向け RSI 分析</small>
+        </div>
+      </div>
+
+      <nav class="tool-nav">
+        <p class="nav-label">メニュー</p>
+        <a href="#overview" data-section="overview" class="nav-link is-active">
+          <span class="nav-icon" aria-hidden="true">⌂</span><span>ホーム</span>
+        </a>
+        <a href="#candidates" data-section="candidates" class="nav-link">
+          <span class="nav-icon" aria-hidden="true">1</span><span>銘柄を選ぶ</span>
+        </a>
+        <a href="#decision" data-section="decision" class="nav-link">
+          <span class="nav-icon" aria-hidden="true">2</span><span>判断を見る</span>
+        </a>
+        <a href="#journal" data-section="journal" class="nav-link">
+          <span class="nav-icon" aria-hidden="true">3</span><span>振り返り</span>
+        </a>
+        <p class="nav-label nav-label-secondary">詳しい情報</p>
+        <a href="#risk" data-section="risk" class="nav-link">
+          <span class="nav-icon" aria-hidden="true">✓</span><span>安全ルール</span>
+        </a>
+        <a href="#system" data-section="system" class="nav-link">
+          <span class="nav-icon" aria-hidden="true">⚙</span><span>接続状態</span>
+        </a>
+      </nav>
+
+      <div class="safety-card">
+        <div class="status-line"><span class="pulse"></span><strong>注文は停止中</strong></div>
+        <p>この画面でお金は動きません。SIMULATE注文も常に拒否します。</p>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">RSI 分析ダッシュボード</p>
+          <h1 id="page-title">今日の状況</h1>
+        </div>
+        <div class="top-actions">
+          <span id="connection-pill" class="pill pill-wait">画面を確認中</span>
+          <button id="refresh-button" class="button button-secondary" type="button">最新の状態に更新</button>
+        </div>
+      </header>
+
+      <div class="release-boundary" role="note">
+        <span class="boundary-icon" aria-hidden="true">✓</span>
+        <div><strong>この画面は練習用です。お金は動きません</strong>
+        <span>SHADOW / 注文機能は無効です。買い・売りの表示が出ても、SIMULATE注文を含めて発注は常に0件です。</span></div>
+      </div>
+
+      <div id="global-message" class="message" role="status" aria-live="polite" hidden></div>
+
+      <section id="overview" class="workspace-section is-active" aria-labelledby="overview-title">
+        <article class="next-action-card">
+          <div>
+            <p class="step-label">まず、ここから</p>
+            <h2>次の営業日に分析する銘柄を選びましょう</h2>
+            <p>システムが安全条件を確認した候補から、あなたが1銘柄を選びます。迷った日は「選ばない」で大丈夫です。</p>
+          </div>
+          <a class="button button-primary button-link" href="#candidates" data-go="candidates">候補を見る</a>
+        </article>
+        <div class="section-heading">
+          <div><p class="eyebrow">現在の状態</p><h2 id="overview-title">準備できているか確認</h2></div>
+          <span class="quiet">利益や勝率は保証されません</span>
+        </div>
+        <div class="metric-grid">
+          <article class="metric-card accent-card">
+            <span class="metric-label">分析する日</span>
+            <strong id="metric-session">—</strong>
+            <small>銘柄を確定すると表示されます</small>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">選べる候補</span>
+            <strong id="metric-eligible">—</strong>
+            <small>上がる順のランキングではありません</small>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">選んだ銘柄</span>
+            <strong id="metric-state">未選択</strong>
+            <small id="metric-state-note">まだ選ばれていません</small>
+          </article>
+          <article class="metric-card">
+            <span class="metric-label">注文</span>
+            <strong class="safe-text">停止中</strong>
+            <small>分析だけを行う安全モード</small>
+          </article>
+        </div>
+
+        <div class="two-column">
+          <article class="panel">
+            <div class="panel-title"><div><p class="eyebrow">進め方</p><h3>銘柄を決める4つの手順</h3></div></div>
+            <ol class="flow-list">
+              <li data-flow="DRAFT"><span>1</span><div><strong>候補を選ぶ</strong><p>1銘柄、または「今日は選ばない」を選択</p></div></li>
+              <li data-flow="VALIDATED"><span>2</span><div><strong>内容を確認する</strong><p>対象にできる銘柄かシステムがもう一度確認</p></div></li>
+              <li data-flow="ARMED_NEXT_SESSION"><span>3</span><div><strong>分析対象に確定する</strong><p>次の営業日に見る銘柄を固定（注文はしません）</p></div></li>
+              <li data-flow="SESSION_LOCKED"><span>4</span><div><strong>当日は変更しない</strong><p>結果を見てから銘柄を差し替えることを防止</p></div></li>
+            </ol>
+          </article>
+          <article class="panel explain-panel">
+            <div class="panel-title"><div><p class="eyebrow">この画面でできること</p><h3>判断の練習と振り返り</h3></div></div>
+            <ul class="plain-check-list"><li>条件に合う候補を確認する</li><li>RSIによる判断理由を見る</li><li>安全ルールと記録を振り返る</li></ul>
+            <div class="callout"><strong>できないこと</strong><span>注文や口座操作はできません。分析対象を確定しても、お金は動きません。</span></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="candidates" class="workspace-section" aria-labelledby="candidates-title" hidden>
+        <div class="section-heading">
+          <div><p class="eyebrow">手順 1</p><h2 id="candidates-title">分析する銘柄を1つ選ぶ</h2></div>
+          <span class="quiet">最大20銘柄から選択</span>
+        </div>
+        <div class="panel selection-panel">
+          <div class="selection-toolbar">
+            <div>
+              <label for="target-session">分析する営業日</label>
+              <input id="target-session" type="date" autocomplete="off">
+            </div>
+            <div class="selection-actions">
+              <button id="save-selection" type="button" class="button button-secondary">1. 選択を保存</button>
+              <button id="validate-selection" type="button" class="button button-secondary">2. 内容を確認</button>
+              <button id="arm-selection" type="button" class="button button-primary">3. 分析対象に確定</button>
+            </div>
+          </div>
+          <p class="field-help"><strong>使い方：</strong>日付と銘柄を選ぶと、その時点で必要なボタンが1つだけ表示されます。確定は「この銘柄を分析する」という意味で、注文ではありません。</p>
+          <p id="selection-availability" class="availability-note" hidden>候補銘柄はまだありません。現在は表示専用です。候補データが準備されるまで操作は必要ありません。</p>
+          <div class="candidate-table-wrap">
+            <table class="candidate-table">
+              <thead><tr><th scope="col">選ぶ</th><th scope="col">銘柄</th><th scope="col">対象にできる？</th><th scope="col">表示順</th><th scope="col">理由</th></tr></thead>
+              <tbody id="candidate-rows"><tr><td colspan="5" class="empty">データを読み込んでいます…</td></tr></tbody>
+            </table>
+          </div>
+          <label class="no-trade-choice"><input type="radio" name="candidate" value=""><span><strong>この日は銘柄を選ばない</strong><small>迷ったときの安全な選択です</small></span></label>
+        </div>
+      </section>
+
+      <section id="decision" class="workspace-section" aria-labelledby="decision-title" hidden>
+        <div class="section-heading">
+          <div><p class="eyebrow">手順 2</p><h2 id="decision-title">システムの判断を見る</h2></div>
+          <span class="pill pill-info">RSIを重視</span>
+        </div>
+        <article class="panel decision-status decision-hero">
+          <div class="panel-title"><div><p class="eyebrow">いまの判断</p><h3 id="decision-summary">条件がそろうまで待ちます</h3></div><span id="decision-badge" class="pill pill-wait">待機中</span></div>
+          <p id="decision-reasons" class="decision-reasons">判断に必要なデータを待っています。</p>
+          <details class="technical-details"><summary>詳しい判定データを見る</summary><pre id="decision-detail" class="data-block">判断データ待ち</pre></details>
+        </article>
+        <div class="logic-grid">
+          <article class="panel logic-panel">
+            <div class="logic-number">1</div><p class="eyebrow">使うデータ</p><h3>確定した15分ごとの値動き</h3>
+            <p>まだ動いている途中のデータは使いません。確定した値だけで判断します。</p>
+          </article>
+          <article class="panel logic-panel buy-logic">
+            <div class="logic-number">2</div><p class="eyebrow">買い候補の条件</p><h3>売られ過ぎから回復したとき</h3>
+            <ul id="entry-rules"><li>RSIが30以下まで下がった <small>（内部基準：RSI ≤ 30）</small></li><li>RSIが35を上回って回復した</li><li>価格も上向いたことを確認した</li><li>決められた時間内だけ判断する</li></ul>
+          </article>
+          <article class="panel logic-panel exit-logic">
+            <div class="logic-number">3</div><p class="eyebrow">売り候補の条件</p><h3>損失を抑え、当日中に終了</h3>
+            <ul id="exit-rules"><li>1.5 ATR分下がったら損失を限定</li><li>RSIが60以上になったら終了</li><li>最長2時間で終了</li><li>市場が閉まる15分前までに終了</li></ul>
+          </article>
+        </div>
+        <article class="panel q012-panel" aria-labelledby="q012-title">
+          <div class="panel-title"><div><p class="eyebrow">買い判断の追加確認（Q012）</p><h3 id="q012-title">勢い・売買しやすさ・追いかけ過ぎを確認</h3></div><span class="pill pill-info">3つすべて必要</span></div>
+          <div class="q012-grid">
+            <div><strong>出来高 1.5倍以上</strong><p>シグナルの確定足の出来高が、直前13本の中央値の1.5倍以上か確認します。少なければ待機します。</p></div>
+            <div><strong>スプレッド 0.10%以下</strong><p>最新の売値と買値の開きが0.10%以下か確認します。開きが大きいときは待機します。</p></div>
+            <div><strong>追いかけ幅 0.50%以下</strong><p>直前高値を上回っても、上回り幅が0.50%を超えたら高値追いを避けて待機します。</p></div>
+          </div>
+          <p class="field-help">これらは不利な場面を避ける確認条件で、値上がりや利益を保証するものではありません。</p>
+        </article>
+        <article class="panel q013-panel" aria-labelledby="q013-title">
+          <div class="panel-title"><div><p class="eyebrow">Q013研究候補：ATR比0.50%以下</p><h3 id="q013-title">値動きが大き過ぎる場面を待機する固定候補</h3></div><span class="pill pill-wait">本番未採用</span></div>
+          <p>確定した15分足の「ATR ÷ 終値」が0.50%以下かを確認します。0.50%を超える場合や、計算に必要なデータが足りない場合は待機します。</p>
+          <div class="warning-callout" role="note"><strong>本番未採用・注文は0件です</strong><p>将来のSHADOW比較に使う固定候補です。現在は記録機能を未接続としており、現行の売買判断も変えません。</p></div>
+        </article>
+        <article class="panel q014-panel" aria-labelledby="q014-title">
+          <div class="panel-title"><div><p class="eyebrow">Q014討論の結論</p><h3 id="q014-title">条件を増やす前に、将来の比較記録を作る</h3></div><span class="pill pill-wait">設計中</span></div>
+          <p>基準版とQ013を、同じユーザー選択・同じ確定データで注文せずに比較できる記録を優先します。待機、仮想執行モデル上の未約定想定、欠損も消さずに残す計画です。</p>
+          <div class="warning-callout" role="note"><strong>まだ比較開始前です</strong><p>記録機能は未実装・未接続です。新しい売買条件の採用、SIMULATE注文、REAL注文は行いません。</p></div>
+        </article>
+        <details class="panel glossary"><summary>RSI・ATRなどの用語をやさしく確認</summary><dl><div><dt>RSI</dt><dd>買われ過ぎ・売られ過ぎの目安。0〜100で表します。</dd></div><div><dt>ATR</dt><dd>値動きの大きさの目安。損失を抑える基準に使います。</dd></div><div><dt>SHADOW</dt><dd>判断だけを記録し、注文は出さない練習モードです。</dd></div><div><dt>Wilder RSI(14)</dt><dd>直近14期間を使う、RSIの標準的な計算方法です。</dd></div><div><dt>RTH</dt><dd>米国市場の通常取引時間です。時間外の値動きは使いません。</dd></div></dl></details>
+      </section>
+
+      <section id="risk" class="workspace-section" aria-labelledby="risk-title" hidden>
+        <div class="section-heading"><div><p class="eyebrow">詳しい情報</p><h2 id="risk-title">損失を抑えるルール</h2></div><span class="quiet">迷ったら何もしない</span></div>
+        <article class="panel risk-current-panel">
+          <div class="panel-title"><div><p class="eyebrow">現在の保守的な設定</p><h3>次回セッション用の予定値</h3></div><span id="risk-settings-status" class="pill pill-wait">読み込み中</span></div>
+          <div class="rule-grid">
+            <article class="rule-card current-setting"><strong id="current-planned-risk">0.25%</strong><span>1回の予定損失</span><p>新規買いの数量計算に使う予定値</p></article>
+            <article class="rule-card current-setting"><strong id="current-daily-limit">0.75%</strong><span>1日の新規買い停止線</span><p>到達後は新しい買い判断を停止</p></article>
+            <article class="rule-card current-setting"><strong id="current-weekly-limit">2.00%</strong><span>1週間の新規買い停止線</span><p>到達後は新しい買い判断を停止</p></article>
+            <article class="rule-card current-setting"><strong id="current-investment-limit">未設定</strong><span>最大投資額</span><p>未設定なら新規買いをブロック</p></article>
+          </div>
+          <div class="warning-callout" role="note"><strong>損失額を保証する上限ではありません</strong><p>予定損失と日次・週次の停止線は、数量計算と新規買いを止めるための基準です。窓開け、スリッページ、手数料、通信・市場障害により、実際の損失は設定値を超えることがあります。保有中の売り（退出）はこれらの停止線で妨げません。</p></div>
+        </article>
+
+        <article class="panel risk-editor-panel">
+          <div class="panel-title"><div><p class="eyebrow">次回セッションから変更</p><h3>安全設定を保存</h3></div><span class="pill pill-safe">当日変更なし</span></div>
+          <p id="risk-settings-readonly" class="availability-note">現在は表示専用です。保存先を明示してダッシュボードを起動した場合だけ変更できます。</p>
+          <form id="risk-settings-form" class="risk-settings-form" novalidate>
+            <label>適用する対象日<input id="risk-target-session" name="target_session" type="date" autocomplete="off" disabled required><small>保存時は日付として扱います。運用時は取引所カレンダーの営業日との完全一致が必要です</small></label>
+            <label>1回の予定損失（%）<input id="risk-planned-percent" name="planned_risk_percent" type="number" inputmode="decimal" min="0.01" max="1.00" step="0.01" value="0.25" disabled required><small>現在の推奨 0.25% / 最大 1%</small></label>
+            <label>1日の新規買い停止線（%）<input id="risk-daily-percent" name="daily_loss_percent" type="number" inputmode="decimal" min="0.01" max="2.00" step="0.01" value="0.75" disabled required><small>現在の推奨 0.75% / 最大 2%</small></label>
+            <label>1週間の新規買い停止線（%）<input id="risk-weekly-percent" name="weekly_loss_percent" type="number" inputmode="decimal" min="0.01" max="5.00" step="0.01" value="2.00" disabled required><small>現在の推奨 2% / 最大 5%</small></label>
+            <label>最大投資額（米ドル）<input id="risk-investment-dollars" name="maximum_investment_dollars" type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="例: 500.00" disabled><small>買い代金 + 買い手数料の合計。空欄なら新規買いを停止</small></label>
+            <div class="form-actions"><button id="save-risk-settings" class="button button-primary" type="submit" disabled>次回用として保存</button></div>
+          </form>
+          <p class="field-help">保存しても注文機能は有効になりません。現在のセッションには適用せず、過去・当日の設定を上方向へ変更できません。</p>
+        </article>
+
+        <div class="section-heading compact-heading"><div><p class="eyebrow">変更できる絶対上限</p><h3>推奨値とは別の安全天井</h3></div></div>
+        <div class="rule-grid allowed-maxima">
+          <article class="rule-card"><strong>最大 1%</strong><span>1回の予定損失</span><p>推奨値は0.25%</p></article>
+          <article class="rule-card"><strong>最大 2%</strong><span>1日の新規買い停止線</span><p>推奨値は0.75%</p></article>
+          <article class="rule-card"><strong>最大 5%</strong><span>1週間の新規買い停止線</span><p>推奨値は2%</p></article>
+          <article class="rule-card"><strong>1往復</strong><span>1日の回数</span><p>買いと売りを1組まで（変更不可）</p></article>
+        </div>
+        <div class="section-heading compact-heading"><div><p class="eyebrow">現在の確認結果</p><h3>安全チェック</h3></div></div>
+        <div id="risk-cards" class="metric-grid"></div>
+        <article class="panel">
+          <div class="panel-title"><div><p class="eyebrow">自動で待機する条件</p><h3>1つでも問題があれば判断を止めます</h3></div></div>
+          <div class="stop-grid"><span>データが足りない</span><span>銘柄を選んでいない</span><span>対象の日付が違う</span><span>保存内容を確認できない</span><span>損失上限に達した</span><span>接続を確認できない</span></div>
+        </article>
+      </section>
+
+      <section id="journal" class="workspace-section" aria-labelledby="journal-title" hidden>
+        <div class="section-heading"><div><p class="eyebrow">手順 3</p><h2 id="journal-title">判断の記録を振り返る</h2></div><span class="quiet">良かった点・改善点を確認</span></div>
+        <div id="journal-list" class="journal-list"><div class="panel empty">記録はまだありません。</div></div>
+      </section>
+
+      <section id="system" class="workspace-section" aria-labelledby="system-title" hidden>
+        <div class="section-heading"><div><p class="eyebrow">困ったとき</p><h2 id="system-title">画面と安全機能の状態</h2></div><span class="pill pill-safe">この端末だけ</span></div>
+        <p class="section-intro">この画面が正常に動いているかを確認できます。口座情報や注文情報は表示しません。</p>
+        <article class="panel">
+          <dl id="system-list" class="system-list"><div><dt>UI</dt><dd>127.0.0.1 loopback</dd></div><div><dt>注文経路</dt><dd>このUIにはありません</dd></div></dl>
+        </article>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

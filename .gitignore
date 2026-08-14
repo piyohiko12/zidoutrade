@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Account-bound and mutable trading artifacts
+runtime/
+private/
+data/
+logs/
+*.jsonl
+*.log
+*.pid
+*.sock
+*.lock
+activation_marker*.json
+final_lock*.json
+activation.secret
+*.secret
+system.active.json
+GLOBAL_STOP
+account*.json
+selection_manifest*.json
+state.json
+events.jsonl
+intents/
+selection-latest.json
+selection-revisions/
+writer.lock
+
+# Market / performance data (fixtures are explicitly allowed)
+*.csv
+!tests/fixtures/**/*.csv
+*.parquet
+*.feather
+*.sqlite*
+backtests/
+backtest_input_manifest*.json
+backtest_report*.json
+symbol_15m_*.json
+symbol_daily_*.json
+spy_daily_*.json
+us_trading_calendar*.json
